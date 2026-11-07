@@ -191,7 +191,7 @@ class CaptureProcess:
 
     def _read_stderr(self) -> None:
         for raw in self.proc.stderr:
-            line = raw.decode("utf-8", "replace").rstrip()
+            line = raw.decode("utf-8", "replace").replace("\r", "").strip()  # dumpcap redraws its counter with \r
             if line:
                 self.stderr_lines.append(line)
                 for pat in _DROP_PATTERNS:
