@@ -184,5 +184,37 @@ class WindowsProcess(unittest.TestCase):
         self.assertIsNone(s.error)
 
 
+class GuiWindowsSupport(unittest.TestCase):
+    """gui/winsupport is stdlib-only and safe on every platform (no Dear PyGui import)."""
+
+    def setUp(self):
+        from l2loopcheck.gui import winsupport
+
+        self.ws = winsupport
+
+    def test_scale_override(self):
+        with mock.patch.dict(os.environ, {"L2LC_UI_SCALE": "1.5"}):
+            self.assertEqual(self.ws.enable_dpi_awareness(), 1.5)
+        with mock.patch.dict(os.environ, {"L2LC_UI_SCALE": "0.5"}):
+            self.assertEqual(self.ws.enable_dpi_awareness(), 1.0)
+
+    def test_documents_dir(self):
+        d = self.ws.documents_dir()
+        self.assertTrue(os.path.isabs(d))
+        if os.name == "nt":
+            self.assertTrue(os.path.isdir(d), d)
+
+    def test_fit_to_screen(self):
+        w, h = self.ws.fit_to_screen(100000, 100000)
+        if os.name == "nt":
+            self.assertLess(w, 100000)
+            self.assertLess(h, 100000)
+        self.assertEqual(self.ws.fit_to_screen(400, 300), (400, 300))
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_cjk_font_first(self):
+        self.assertTrue(self.ws.font_candidates()[0].lower().endswith("msjh.ttc"))
+
+
 if __name__ == "__main__":
     unittest.main()

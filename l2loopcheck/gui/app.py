@@ -22,10 +22,19 @@ import dearpygui.dearpygui as dpg
 from .. import __version__
 from ..capture import WIRESHARK_URL, CaptureToolMissing, list_interfaces
 from ..live import LiveSession
+from . import winsupport
 
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".l2loopcheck", "settings.json")
-DEFAULT_RUNS = os.path.join(os.path.expanduser("~"), "Documents", "l2-loopcheck")
+DEFAULT_RUNS = os.path.join(winsupport.documents_dir(), "l2-loopcheck")
 BRANDING_KEYS = ("company", "logo_path", "engineer", "case_ref", "site")
+
+UI_SCALE = 1.0  # set by run_gui() from the display DPI (Windows)
+
+
+def px(n: float) -> int:
+    """Scale a layout size in 96-DPI pixels to the display."""
+    return int(round(n * UI_SCALE))
+
 
 GREEN, AMBER, RED, GREY = (46, 160, 67), (230, 150, 20), (220, 50, 40), (150, 155, 160)
 VERDICT_COLOURS = {"Loop likely": RED, "STP unstable": AMBER, "Storm without clear loop": AMBER,
@@ -36,8 +45,7 @@ def _font_candidates() -> list[str]:
     if sys.platform == "darwin":
         return ["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"]
     if os.name == "nt":
-        windir = os.environ.get("WINDIR", r"C:\Windows")
-        return [os.path.join(windir, "Fonts", f) for f in ("segoeui.ttf", "arial.ttf")]
+        return winsupport.font_candidates()
     return ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/TTF/DejaVuSans.ttf"]
 
@@ -57,6 +65,8 @@ def save_settings(s: dict) -> None:
 
 
 def open_path(path: str) -> None:
+    if winsupport.open_with_default_app(path):
+        return
     if path.endswith(".html"):
         webbrowser.open("file://" + os.path.abspath(path))
     elif sys.platform == "darwin":
@@ -153,7 +163,8 @@ class App:
         dpg.configure_item("live_group", enabled=True)
         dpg.configure_item("result_group", show=False)
         dpg.set_value("marks_list", "")
-        self.status(f"Capturing on {iface}. Unplug suspect cables one at a time and add a mark each time.", GREEN)
+        shown = next((d for n, d in self.interfaces if n == iface and d), iface)  # friendly name on Windows
+        self.status(f"Capturing on {shown}. Unplug suspect cables one at a time and add a mark each time.", GREEN)
 
     def _capture_ended(self, err: Optional[str]) -> None:
         if self.session and err:
@@ -293,56 +304,57 @@ class App:
     def build(self) -> None:
         with dpg.font_registry():
             path = next((p for p in _font_candidates() if os.path.isfile(p)), None)
+            latin = next((p for p in winsupport.latin_font_candidates() if os.path.isfile(p)), path)
             if path:
-                default = dpg.add_font(path, 16)
-                self.mid_font = dpg.add_font(path, 26)
-                self.big_font = dpg.add_font(path, 96)
+                default = dpg.add_font(path, px(16))
+                self.mid_font = dpg.add_font(latin, px(26))
+                self.big_font = dpg.add_font(latin, px(96))
                 dpg.bind_font(default)
 
         with dpg.file_dialog(directory_selector=False, show=False, callback=self.open_file, tag="file_dlg",
-                             width=700, height=420, modal=True):
+                             width=px(700), height=px(420), modal=True):
             dpg.add_file_extension("Captures (*.pcap *.pcapng *.cap){.pcap,.pcapng,.cap}")
             dpg.add_file_extension(".*")
 
-        with dpg.window(label="Wireshark needed", modal=True, show=False, tag="missing_tool", width=520,
-                        no_resize=True, pos=(180, 160)):
-            dpg.add_text("No capture tool was found on this computer.", wrap=480)
+        with dpg.window(label="Wireshark needed", modal=True, show=False, tag="missing_tool", width=px(520),
+                        no_resize=True, pos=(px(180), px(160))):
+            dpg.add_text("No capture tool was found on this computer.", wrap=px(480))
             dpg.add_text("Install Wireshark (it includes dumpcap and, on Windows, Npcap), then press Refresh.",
-                         wrap=480)
+                         wrap=px(480))
             with dpg.group(horizontal=True):
                 dpg.add_button(label="Open download page", callback=lambda: webbrowser.open(WIRESHARK_URL))
                 dpg.add_button(label="Close", callback=lambda: dpg.configure_item("missing_tool", show=False))
 
-        with dpg.window(label="Send loop probe?", modal=True, show=False, tag="probe_modal", width=560,
-                        no_resize=True, pos=(160, 160)):
+        with dpg.window(label="Send loop probe?", modal=True, show=False, tag="probe_modal", width=px(560),
+                        no_resize=True, pos=(px(160), px(160))):
             dpg.add_text("The probe sends at most 3 broadcast test frames, one per second, from this computer's "
                          "own network address, and stops as soon as one comes back. If a frame comes back, "
-                         "this port is part of a loop.", wrap=520)
+                         "this port is part of a loop.", wrap=px(520))
             dpg.add_text("Only use it with the site owner's permission.", color=AMBER)
             with dpg.group(horizontal=True):
                 dpg.add_button(label="Send probe", callback=self.run_probe)
                 dpg.add_button(label="Cancel", callback=lambda: dpg.configure_item("probe_modal", show=False))
 
-        with dpg.window(label="Report details", show=False, tag="details_win", width=560, pos=(160, 100)):
+        with dpg.window(label="Report details", show=False, tag="details_win", width=px(560), pos=(px(160), px(100))):
             dpg.add_text("Shown on the report. Leave blank for a neutral report.", color=GREY)
             for k, label in (("company", "Company"), ("logo_path", "Logo file (PNG/JPG)"),
                              ("engineer", "Engineer"), ("case_ref", "Case reference"), ("site", "Site / location")):
-                dpg.add_input_text(label=label, tag=f"set_{k}", default_value=self.settings.get(k, ""), width=340)
+                dpg.add_input_text(label=label, tag=f"set_{k}", default_value=self.settings.get(k, ""), width=px(340))
             dpg.add_input_text(label="Save runs in", tag="set_runs_dir",
-                               default_value=self.settings.get("runs_dir", DEFAULT_RUNS), width=340)
+                               default_value=self.settings.get("runs_dir", DEFAULT_RUNS), width=px(340))
             dpg.add_button(label="Save", callback=self.save_details)
 
         with dpg.window(tag="main"):
             with dpg.group(horizontal=True):
                 dpg.add_text("Network adapter")
-                dpg.add_combo([], tag="iface", width=420)
+                dpg.add_combo([], tag="iface", width=px(420))
                 dpg.add_button(label="Refresh", callback=self.refresh_interfaces)
                 dpg.add_button(label="  Start  ", tag="btn_start", callback=self.start)
                 dpg.add_button(label="  Stop  ", tag="btn_stop", callback=self.stop, show=False)
-                dpg.add_spacer(width=10)
+                dpg.add_spacer(width=px(10))
                 dpg.add_button(label="Open capture file...", callback=lambda: dpg.show_item("file_dlg"))
                 dpg.add_button(label="Report details...", callback=lambda: dpg.show_item("details_win"))
-            dpg.add_text("", tag="status", wrap=1000)
+            dpg.add_text("", tag="status", wrap=px(1000))
             dpg.add_separator()
 
             with dpg.group(tag="live_group"):
@@ -353,17 +365,17 @@ class App:
                         if self.big_font:
                             dpg.bind_item_font("big_number", self.big_font)
                         dpg.add_text("0 = no frames circulating. When you unplug the looped cable this drops to 0.",
-                                     color=GREY, wrap=330)
+                                     color=GREY, wrap=px(330))
                     with dpg.group():
                         dpg.add_text("Add a mark each time you change something:")
-                        dpg.add_input_text(tag="mark_text", hint="e.g. unplugged 2/F uplink", width=360,
+                        dpg.add_input_text(tag="mark_text", hint="e.g. unplugged 2/F uplink", width=px(360),
                                            on_enter=True, callback=self.add_mark)
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="Add mark", callback=self.add_mark)
                             dpg.add_button(label="Send loop probe...", tag="btn_probe", callback=self.ask_probe)
-                        dpg.add_input_text(tag="marks_list", multiline=True, readonly=True, width=520, height=110)
+                        dpg.add_input_text(tag="marks_list", multiline=True, readonly=True, width=px(520), height=px(110))
                 dpg.add_text("", tag="stats")
-                with dpg.plot(label="Last 5 minutes", height=260, width=-1):
+                with dpg.plot(label="Last 5 minutes", height=px(260), width=-1):
                     dpg.add_plot_legend()
                     dpg.add_plot_axis(dpg.mvXAxis, label="seconds (0 = now)", tag="x_axis")
                     with dpg.plot_axis(dpg.mvYAxis, label="frames/s", tag="y_axis"):
@@ -381,21 +393,26 @@ class App:
                     dpg.add_button(label="Open report", callback=lambda: self.last_run_dir and open_path(
                         os.path.join(self.last_run_dir, "report.html")))
                     dpg.add_button(label="Open folder", callback=lambda: self.last_run_dir and open_path(self.last_run_dir))
-                dpg.add_input_text(tag="findings", multiline=True, readonly=True, width=-1, height=220)
+                dpg.add_input_text(tag="findings", multiline=True, readonly=True, width=-1, height=px(220))
 
         with dpg.theme() as th:
             with dpg.theme_component(dpg.mvAll):
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
-                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 8, 5)
-                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, 8)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, px(4))
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, px(8), px(5))
+                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, px(8), px(8))
         dpg.bind_theme(th)
 
 
 def run_gui(screenshot: Optional[str] = None, frames: int = 0) -> int:
+    global UI_SCALE
+    UI_SCALE = winsupport.enable_dpi_awareness()  # before any window exists
     dpg.create_context()
     app = App()
     app.build()
-    dpg.create_viewport(title=f"l2-loopcheck {__version__}", width=1120, height=860)
+    width, height = winsupport.fit_to_screen(px(1120), px(860))
+    icon = winsupport.app_icon() or ""
+    dpg.create_viewport(title=f"l2-loopcheck {__version__}", width=width, height=height,
+                        small_icon=icon, large_icon=icon)
     dpg.setup_dearpygui()
     dpg.show_viewport()
     dpg.set_primary_window("main", True)
