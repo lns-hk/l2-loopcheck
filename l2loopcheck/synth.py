@@ -142,7 +142,7 @@ def scenario_loop(seed: int = 2, duration: float = 60.0, start: float = 20.0, pe
     out: Frames = []
     for t, fr in base:
         out.append((t, fr))
-        flooded = fr[0] & 1
+        flooded = fr[0] & 1 and fr[:5] != b"\x01\x80\xc2\x00\x00"  # bridges never forward link-local
         if t >= start and flooded:
             for k in range(1, copies + 1):
                 out.append((t + k * period * rng.uniform(0.97, 1.03), fr))
