@@ -21,7 +21,14 @@ Verdicts: *Loop likely*, *STP unstable*, *Storm without clear loop*,
 *Inconclusive*, *Healthy*. Every finding separates what was observed (with
 frame numbers you can check in Wireshark) from the hypothesis.
 
-## Quick start
+## Install
+
+* macOS: see [docs/INSTALL-MACOS.md](docs/INSTALL-MACOS.md)
+* Windows: see docs/INSTALL-WINDOWS.md (in progress)
+* From source (any OS, Python 3.10+): `pip install .` for the CLI,
+  `pip install ".[gui]"` for the GUI, then `l2loopcheck gui`.
+
+## Quick start (command line)
 
 ```sh
 python -m l2loopcheck analyze capture.pcapng --html report.html
@@ -37,6 +44,13 @@ The analysis engine and CLI use only the Python standard library (3.10+). The
 GUI uses Dear PyGui.
 
 See [docs/DETECTION.md](docs/DETECTION.md) for how each detector works.
+
+## Testing
+
+`python -m unittest discover -s tests -t .` runs the unit tests against
+synthetic captures (and cross-checks counts with tshark when installed).
+`sudo bash tests/lab/netns_loop.sh` builds a real loop between Linux bridges,
+captures it live and checks the verdict; CI runs it on every push.
 
 ## Licence
 
