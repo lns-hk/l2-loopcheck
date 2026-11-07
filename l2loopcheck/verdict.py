@@ -182,9 +182,13 @@ def judge(r: dict) -> dict:
         findings.append(_f(
             "high", "top-talker", "One device dominates flooded traffic",
             f"{top['mac']} {', '.join(top['ips'])} sent {top['share']:.0%} of all broadcast/multicast frames "
-            f"({top['pps']:.0f}/s), mostly {top['top_protocols'][0][0]}{names}.",
-            hypothesis="This device is either misbehaving itself or its frames are being multiplied by a loop; "
-                       "the loop findings above tell which.",
+            f"({top['pps']:.0f}/s), mostly {top['top_protocols'][0][0]}{names}. "
+            f"{top['copy_share']:.0%} of them were byte-identical repeats of an earlier frame.",
+            hypothesis=("Frames from many sources are circulating (see the loop findings), so a loop is most likely "
+                        "multiplying this device's frames rather than the device sending them all."
+                        if loop_level and top["copy_share"] >= 0.5 else
+                        "This device itself is sending this volume; check it (driver, firmware, misconfigured "
+                        "discovery or casting software)."),
             recommendation="Locate the port this MAC is learned on and check the device.",
             frames=[top["first_frame"]]))
     sc = r["storm_control"]

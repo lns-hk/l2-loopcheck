@@ -150,7 +150,7 @@ def render_html(r: dict, branding: dict | None = None) -> str:
     marks = r.get("marks") or []
     marks_rows = [[i + 1, time.strftime("%H:%M:%S", time.localtime(m["ts"])), m["label"]] for i, m in enumerate(marks)]
 
-    talkers = [[t["mac"], ", ".join(t["ips"]) or "-", f"{t['share']:.1%}", f"{t['pps']:.0f}",
+    talkers = [[t["mac"], ", ".join(t["ips"]) or "-", f"{t['share']:.1%}", f"{t['pps']:.0f}", f"{t['copy_share']:.0%}",
                 ", ".join(p for p, _ in t["top_protocols"]), ", ".join(t["names"][:2]) or "-", t["first_frame"]]
                for t in tr["top_talkers"][:10]]
     protos = [[p["proto"], p["frames"], f"{p['share']:.1%}", f"{p['pps']:.1f}"] for p in tr["by_protocol"][:12]]
@@ -251,7 +251,7 @@ footer{{margin-top:36px;color:var(--muted);font-size:11px;border-top:1px solid v
 <p>Broadcast {tr['broadcast']:,} frames, multicast {tr['multicast']:,} frames, average {tr['flooded_pps']:.0f} flooded frames/s.</p>
 <div class="cols"><div><h3>By protocol</h3>{_table(protos, ['Protocol', 'Frames', 'Share', 'Per s'])}</div>
 <div><h3>VLANs seen</h3>{_table([[k, n] for k, n in tr['vlans'].items()], ['VLAN', 'Frames'])}</div></div>
-<h3>Top senders</h3>{_table(talkers, ['MAC', 'IP', 'Share', 'Per s', 'Protocols', 'Names', 'First frame'])}
+<h3>Top senders</h3>{_table(talkers, ['MAC', 'IP', 'Share', 'Per s', 'Repeats', 'Protocols', 'Names', 'First frame'])}
 
 <h2>Spanning tree</h2>
 <p>{stp['bpdus']:,} BPDUs ({e(', '.join(f'{k} x{n}' for k, n in stp['kinds'].items()) or 'none')}).

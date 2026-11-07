@@ -92,9 +92,10 @@ class Analyzer:
             sec["mcast"] += 1
         if f.proto == "ARP":
             sec["arp"] += 1
-        if self.dups.feed(ts, pkt.index, f):
+        is_copy = self.dups.feed(ts, pkt.index, f)
+        if is_copy:
             sec["copies"] += 1
-        self.traffic.feed(f, pkt.index)
+        self.traffic.feed(f, pkt.index, is_copy)
         if f.bpdu:
             sec["bpdu"] += 1
             n_tc = len(self.stp.tc_events)

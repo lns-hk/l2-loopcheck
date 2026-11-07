@@ -16,7 +16,7 @@ class TrafficDetector:
         self.vlans: dict[int, int] = {}
         self.subnets: dict[str, set] = {}  # vlan label -> /16 prefixes seen in ARP
 
-    def feed(self, f: Frame, index: int) -> None:
+    def feed(self, f: Frame, index: int, is_copy: bool = False) -> None:
         self.total += 1
         if f.vlans:
             v = f.vlans[-1]
@@ -33,8 +33,10 @@ class TrafficDetector:
         t = self.talkers.get(f.src)
         if t is None:
             t = self.talkers[f.src] = {"mac": mac_str(f.src), "frames": 0, "ips": set(), "protos": {},
-                                       "names": set(), "first_frame": index}
+                                       "names": set(), "first_frame": index, "copies": 0}
         t["frames"] += 1
+        if is_copy:
+            t["copies"] += 1
         t["protos"][f.proto] = t["protos"].get(f.proto, 0) + 1
         if f.ip_src and f.ip_src != b"\0\0\0\0" and len(t["ips"]) < 8:
             t["ips"].add(ip4_str(f.ip_src))
@@ -60,6 +62,7 @@ class TrafficDetector:
                 "ips": sorted(t["ips"]), "names": sorted(t["names"]),
                 "top_protocols": sorted(t["protos"].items(), key=lambda kv: -kv[1])[:3],
                 "first_frame": t["first_frame"],
+                "copy_share": round(t["copies"] / t["frames"], 4) if t["frames"] else 0.0,
             })
         protos = sorted(self.by_proto.values(), key=lambda p: -p["frames"])
         for p in protos:

@@ -62,3 +62,10 @@ class ScenarioVerdicts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TalkerCopies(unittest.TestCase):
+    def test_chatty_host_hypothesis_blames_device(self):
+        r = run("chatty-host")
+        f = next(f for f in r["verdict"]["findings"] if f["code"] == "top-talker")
+        self.assertIn("device itself", f["hypothesis"])

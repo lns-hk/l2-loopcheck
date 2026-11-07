@@ -6,11 +6,12 @@
 #                    \\_______//      two links between br1 and br2 = loop
 set -euo pipefail
 cleanup() {
-  for ns in h1 h2 cap sw; do ip netns del $ns 2>/dev/null || true; done
+  for ns in h1 h2 h3 h4 h5 cap sw; do ip netns del $ns 2>/dev/null || true; done
 }
 trap cleanup EXIT
 cleanup
-ip netns add sw; ip netns add h1; ip netns add h2; ip netns add cap
+ip netns add sw; ip netns add cap
+for n in 1 2 3 4 5; do ip netns add h$n; done
 ip -n sw link add br1 type bridge stp_state 0
 ip -n sw link add br2 type bridge stp_state 0
 ip -n sw link set br1 up; ip -n sw link set br2 up
@@ -26,18 +27,22 @@ attach() { # ns bridge ifname
   ip -n sw link set $3-sw master $2; ip -n sw link set $3-sw up
   ip -n $1 link set $3 up; ip -n $1 link set lo up
 }
-attach h1 br1 eh1; attach h2 br2 eh2; attach cap br2 ecap
-ip -n h1 addr add 192.0.2.1/24 dev eh1
-ip -n h2 addr add 192.0.2.2/24 dev eh2
+attach cap br2 ecap
+for n in 1 2 3 4 5; do
+  br=br1; [ $((n % 2)) -eq 0 ] && br=br2
+  attach h$n $br eh$n
+  ip -n h$n addr add 192.0.2.$n/24 dev eh$n
+done
 # rate-limit the loop so the runner survives: tc on one link
 ip netns exec sw tc qdisc add dev l1-a root tbf rate 20mbit burst 32kbit latency 50ms
 ip netns exec sw tc qdisc add dev l2-a root tbf rate 20mbit burst 32kbit latency 50ms
 OUT=$(mktemp -d)
 ip netns exec cap timeout 25 tcpdump -i ecap -U -s 0 -w "$OUT/loop.pcap" 2>/dev/null &
 sleep 2
-# a few broadcasts from two hosts start the storm
-ip netns exec h1 arping -c 3 -I eh1 192.0.2.99 >/dev/null 2>&1 || ip netns exec h1 ping -b -c 3 192.0.2.255 >/dev/null 2>&1 || true
-ip netns exec h2 ping -c 3 -W 1 192.0.2.1 >/dev/null 2>&1 || true
+# every host ARPs for a missing address once per second: their broadcasts circulate
+for n in 1 2 3 4 5; do
+  ip netns exec h$n sh -c "for i in \$(seq 12); do ping -c1 -W1 192.0.2.$((100 + n)) >/dev/null 2>&1; sleep 1; done" &
+done
 sleep 15
 # break the loop and let the capture end
 ip -n sw link set l2-a down
