@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "l2-loopcheck"
+dynamic = ["version"]
+description = "Layer-2 loop and broadcast-storm health check from packet captures"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Lierre Wong" }]
+keywords = ["network", "layer2", "loop", "broadcast storm", "spanning tree", "pcap"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Topic :: System :: Networking :: Monitoring",
+]
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["dearpygui>=2.0"]
+build = ["pyinstaller>=6"]
+
+[project.scripts]
+l2loopcheck = "l2loopcheck.cli:main"
+
+[project.gui-scripts]
+l2loopcheck-gui = "l2loopcheck.gui.app:run_gui"
+
+[tool.setuptools.dynamic]
+version = { attr = "l2loopcheck.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["l2loopcheck*"]

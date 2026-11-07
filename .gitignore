@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+/captures/
+/runs/
+*.pcap
+*.pcapng
+!tests/fixtures/*.pcap
+.DS_Store
