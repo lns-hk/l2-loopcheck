@@ -149,7 +149,8 @@ class Analyzer:
     def snapshot(self) -> dict:
         """Figures for the live view: the last complete second plus totals."""
         if not self.seconds:
-            return {"t": None, "total": 0, "flooded": 0, "copies": 0, "tc": 0, "packets": 0}
+            return {"t": None, "total": 0, "flooded": 0, "copies": 0, "tc": 0, "arp": 0, "packets": 0,
+                    "copies_total": 0, "tc_total": 0, "duration": 0.0}
         keys = sorted(self.seconds)
         last = self.seconds[keys[-2]] if len(keys) >= 2 else self.seconds[keys[-1]]
         return {
