@@ -1,0 +1,70 @@
+name: ci
+
+on:
+  push:
+    branches: [main, windows]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install tshark (Linux, for the cross-check test)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y tshark
+      - name: Unit tests (engine and CLI are stdlib only)
+        run: python -m unittest discover -s tests -t . -v
+      - name: CLI smoke test
+        run: |
+          python -m l2loopcheck demo loop -o demo.pcap
+          python -m l2loopcheck analyze demo.pcap --html demo.html --json demo.json
+
+  netns-loop:
+    # A real Layer-2 loop between Linux bridges with STP off, captured live.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y tcpdump
+      - run: sudo bash tests/lab/netns_loop.sh
+
+  build:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: test
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ".[gui,build]"
+      - name: appimagetool
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y libfuse2
+          curl -sSL -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
+      - run: bash packaging/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: l2-loopcheck-${{ runner.os }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/*.AppImage

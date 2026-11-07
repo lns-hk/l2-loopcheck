@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=l2-loopcheck
+Comment=Layer-2 loop and broadcast-storm health check
+Exec=l2loopcheck-gui
+Icon=l2-loopcheck
+Categories=Network;Utility;
+Terminal=false

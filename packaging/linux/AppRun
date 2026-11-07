@@ -1,0 +1,4 @@
+#!/bin/sh
+HERE="$(dirname "$(readlink -f "$0")")"
+if [ "$1" = "cli" ]; then shift; exec "$HERE/usr/bin/l2loopcheck" "$@"; fi
+exec "$HERE/usr/bin/l2loopcheck-gui" "$@"
