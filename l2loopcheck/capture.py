@@ -24,6 +24,7 @@ import sys
 import threading
 from typing import Callable, Optional
 
+from . import winproc
 from .pcapio import CaptureReader, Packet
 
 WIRESHARK_URL = "https://www.wireshark.org/download.html"
@@ -33,24 +34,34 @@ class CaptureToolMissing(RuntimeError):
     pass
 
 
-def _candidates_dumpcap() -> list[str]:
+def _candidates(tool: str) -> list[str]:
+    """Where Wireshark's command-line tools (dumpcap, tshark) usually live."""
     c = []
-    w = shutil.which("dumpcap")
+    w = shutil.which(tool)
     if w:
         c.append(w)
     if sys.platform == "darwin":
-        c.append("/Applications/Wireshark.app/Contents/MacOS/dumpcap")
+        c.append(f"/Applications/Wireshark.app/Contents/MacOS/{tool}")
     elif os.name == "nt":
         for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.environ.get("ProgramW6432", r"C:\Program Files"),
                      os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")):
-            c.append(os.path.join(base, "Wireshark", "dumpcap.exe"))
+            c.append(os.path.join(base, "Wireshark", f"{tool}.exe"))
     else:
-        c += ["/usr/bin/dumpcap", "/usr/sbin/dumpcap"]
+        c += [f"/usr/bin/{tool}", f"/usr/sbin/{tool}"]
     return c
 
 
+def _candidates_dumpcap() -> list[str]:
+    return _candidates("dumpcap")
+
+
 def find_dumpcap() -> Optional[str]:
-    return next((p for p in _candidates_dumpcap() if p and os.path.isfile(p)), None)
+    return next((p for p in _candidates("dumpcap") if p and os.path.isfile(p)), None)
+
+
+def find_tshark() -> Optional[str]:
+    return next((p for p in _candidates("tshark") if p and os.path.isfile(p)), None)
 
 
 def find_tcpdump() -> Optional[str]:
@@ -78,20 +89,45 @@ def choose_backend(preference: str = "auto") -> tuple[str, str]:
     raise CaptureToolMissing(f"No capture tool found. Install Wireshark (includes dumpcap): {WIRESHARK_URL}")
 
 
-_IFACE_RE = re.compile(r"^\s*\d+\.\s+(\S+)(?:\s+\((.*)\))?")
+# "1. \Device\NPF_{GUID} (Ethernet)"  dumpcap on Windows; description = adapter friendly name
+# "4. etwdump (Event Tracing for Windows (ETW) reader)"   extcap, nested parentheses
+# "1. en0 (Wi-Fi)"                    dumpcap on macOS
+# "1.en0 [Up, Running, Wireless]"     tcpdump: no space after the dot, flags in brackets
+_IFACE_RE = re.compile(r"^\s*\d+\.\s*(\S+)(?:\s+\((.*?)\))?(?:\s+\[[^\]]*\])?\s*$")
 
 
-def list_interfaces(preference: str = "auto") -> list[tuple[str, str]]:
-    name, exe = choose_backend(preference)
-    proc = subprocess.run([exe, "-D"], capture_output=True, text=True, timeout=30)
-    if proc.returncode != 0 and not proc.stdout:
-        raise RuntimeError((proc.stderr or "").strip() or f"{name} -D failed")
+def parse_interfaces(text: str) -> list[tuple[str, str]]:
+    """Parse ``dumpcap -D`` / ``tcpdump -D`` output into (name, description)."""
     out = []
-    for line in proc.stdout.splitlines():
+    for line in text.splitlines():
         m = _IFACE_RE.match(line)
         if m:
             out.append((m.group(1), m.group(2) or ""))
     return out
+
+
+def list_interfaces(preference: str = "auto") -> list[tuple[str, str]]:
+    name, exe = choose_backend(preference)
+    proc = subprocess.run([exe, "-D"], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", stdin=subprocess.DEVNULL, timeout=30,
+                          **winproc.hidden_kwargs())
+    if proc.returncode != 0 and not proc.stdout:
+        raise RuntimeError((proc.stderr or "").strip() or f"{name} -D failed")
+    return parse_interfaces(proc.stdout)
+
+
+def resolve_interface(name: str, interfaces: list[tuple[str, str]]) -> str:
+    """Map a friendly name (``Ethernet``) or ``dumpcap -D`` index (``3``) to the device name.
+
+    Device names (``\\Device\\NPF_{...}``, ``en7``) and unknown names are returned unchanged.
+    """
+    names = [n for n, _ in interfaces]
+    if name in names:
+        return name
+    if name.isdigit() and 1 <= int(name) <= len(interfaces):
+        return interfaces[int(name) - 1][0]
+    matches = [n for n, d in interfaces if d.strip().lower() == name.strip().lower()]
+    return matches[0] if len(matches) == 1 else name
 
 
 def capture_command(backend: str, exe: str, interface: str) -> list[str]:
@@ -129,10 +165,10 @@ class CaptureProcess:
 
     def start(self) -> None:
         cmd = capture_command(self.backend, self.exe, self.interface)
-        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                     stdin=subprocess.DEVNULL if self.backend == "dumpcap" else None,
-                                     creationflags=flags)
+        # Windows: own process group (and a hidden console for the GUI) so stop() can
+        # send CTRL_BREAK and dumpcap finishes cleanly instead of being killed.
+        self.proc = winproc.popen_stoppable(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                            stdin=subprocess.DEVNULL if self.backend == "dumpcap" else None)
         t1 = threading.Thread(target=self._read, daemon=True, name="capture-reader")
         t2 = threading.Thread(target=self._read_stderr, daemon=True, name="capture-stderr")
         self._threads = [t1, t2]
@@ -169,10 +205,15 @@ class CaptureProcess:
     def stop(self, timeout: float = 5.0) -> None:
         self._stopping = True
         if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+            if not (os.name == "nt" and winproc.send_ctrl_break(self.proc)):
+                self.proc.terminate()
             try:
                 self.proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
         for t in self._threads:
             t.join(timeout=timeout)
+        if self.proc and not any(t.is_alive() for t in self._threads):
+            for pipe in (self.proc.stdout, self.proc.stderr):
+                if pipe:
+                    pipe.close()

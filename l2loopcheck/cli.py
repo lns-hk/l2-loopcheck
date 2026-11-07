@@ -74,7 +74,18 @@ def print_summary(r: dict, out=sys.stdout) -> None:
     w("\n")
 
 
+def _safe_stdio() -> None:
+    """Never crash on a non-UTF-8 console or redirect (e.g. cp932/cp950 on Windows)."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _safe_stdio()
     p = argparse.ArgumentParser(prog="l2loopcheck", description="Layer-2 loop and broadcast-storm health check.")
     p.add_argument("--version", action="version", version=f"l2-loopcheck {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
