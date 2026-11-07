@@ -24,7 +24,7 @@ frame numbers you can check in Wireshark) from the hypothesis.
 ## Install
 
 * macOS: see [docs/INSTALL-MACOS.md](docs/INSTALL-MACOS.md)
-* Windows: see docs/INSTALL-WINDOWS.md (in progress)
+* Windows: see [docs/INSTALL-WINDOWS.md](docs/INSTALL-WINDOWS.md)
 * From source (any OS, Python 3.10+): `pip install .` for the CLI,
   `pip install ".[gui]"` for the GUI, then `l2loopcheck gui`.
 
