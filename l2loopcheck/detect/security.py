@@ -66,7 +66,14 @@ def _add(s: set, value, limit: int = MAX_SMALL) -> None:
 
 
 class _WindowCounter:
-    """Distinct values per key inside a sliding window; remembers each key's peak."""
+    """Peak number of distinct values per key inside a sliding window.
+
+    Must stay cheap under a broadcast storm, when one key can see hundreds of
+    thousands of frames: a repeated value is a dictionary write, and the window
+    is only re-examined when a key reaches a new high.
+    """
+
+    MAX_VALUES = 4096  # far above every threshold; the count saturates here
 
     def __init__(self, window: float) -> None:
         self.window = window
@@ -74,16 +81,19 @@ class _WindowCounter:
         self.peak: dict = {}
 
     def add(self, key, value, ts: float, index: int) -> None:
-        if key not in self.items and len(self.items) >= MAX_KEYS:
+        values = self.items.get(key)
+        if values is None:
+            if len(self.items) >= MAX_KEYS:
+                return
+            values = self.items[key] = {}
+        values[value] = ts
+        best = self.peak.get(key, (0, 0))[0]
+        if len(values) <= best or len(values) < 8 or best >= self.MAX_VALUES:
             return
-        q = self.items.setdefault(key, deque())
-        q.append((ts, value))
-        while q and ts - q[0][0] > self.window:
-            q.popleft()
-        if len(q) >= 8:  # no point counting until it could matter
-            n = len({v for _t, v in q})
-            if n > self.peak.get(key, (0, 0))[0]:
-                self.peak[key] = (n, index)
+        for v in [v for v, seen in values.items() if ts - seen > self.window]:
+            del values[v]
+        if len(values) > best:
+            self.peak[key] = (len(values), index)
 
 
 class SecurityDetector:

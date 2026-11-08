@@ -70,6 +70,38 @@ class SecurityChecks(unittest.TestCase):
         self.assertIn("no-frames", {f["code"] for f in r["verdict"]["findings"]})
 
 
+class StormPerformance(unittest.TestCase):
+    """A real loop delivers hundreds of thousands of frames; the window counter must stay linear."""
+
+    def test_repeated_values_do_not_rescan_the_window(self):
+        import time
+
+        from l2loopcheck.detect.security import _WindowCounter
+
+        c = _WindowCounter(60.0)
+        t0 = time.perf_counter()
+        for i in range(400000):
+            c.add("sender", i % 200, 1000.0 + i * 0.0001, i)
+        self.assertLess(time.perf_counter() - t0, 3.0)
+        self.assertEqual(c.peak["sender"][0], 200)
+
+    def test_values_outside_the_window_do_not_count(self):
+        from l2loopcheck.detect.security import _WindowCounter
+
+        c = _WindowCounter(60.0)
+        for i in range(100):
+            c.add("slow", i, 1000.0 + i * 10.0, i)  # 10 s apart: at most 7 values inside 60 s
+        self.assertLess(c.peak.get("slow", (0, 0))[0], 9)
+
+    def test_memory_is_bounded(self):
+        from l2loopcheck.detect.security import _WindowCounter
+
+        c = _WindowCounter(60.0)
+        for i in range(20000):
+            c.add("sweep", i, 1000.0, i)
+        self.assertGreaterEqual(c.peak["sweep"][0], _WindowCounter.MAX_VALUES)
+
+
 class RogueSeverity(unittest.TestCase):
     def _sev(self, macs, lifetime=1800):
         from l2loopcheck.detect.security import SecurityDetector, security_findings
