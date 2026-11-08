@@ -34,8 +34,8 @@ function Invoke-Checked {
 
 $Version = (& $Python -c "import l2loopcheck; print(l2loopcheck.__version__)").Trim()
 if ($LASTEXITCODE -ne 0) { throw "Cannot import l2loopcheck with $Python" }
-& $Python -c "import dearpygui, PyInstaller" 2>$null
-if ($LASTEXITCODE -ne 0) { throw "$Python needs Dear PyGui and PyInstaller: $Python -m pip install "".[gui,build]""" }
+& $Python -c "import PySide6, PyInstaller" 2>$null
+if ($LASTEXITCODE -ne 0) { throw "$Python needs PySide6 and PyInstaller: $Python -m pip install "".[gui,build]""" }
 Write-Host "Building l2-loopcheck $Version with $Python"
 
 foreach ($d in @("build", "dist")) {
@@ -75,6 +75,8 @@ New-Item -ItemType Directory -Force $App | Out-Null
 Copy-Item -Recurse -Force "build\out\l2loopcheck-gui\*" $App
 Copy-Item -Recurse -Force "build\out\l2loopcheck\*" $App
 Copy-Item -Force "LICENSE" (Join-Path $App "LICENSE.txt")
+Copy-Item -Force "THIRD_PARTY_NOTICES.md" (Join-Path $App "THIRD_PARTY_NOTICES.md")
+Copy-Item -Recurse -Force "packaging\licenses" (Join-Path $App "licenses")
 @"
 l2-loopcheck $Version for Windows
 ===================================
@@ -92,6 +94,10 @@ Command line: open a terminal in this folder and run  l2loopcheck.exe --help
 
 Guide: https://github.com/lns-hk/l2-loopcheck/blob/main/docs/INSTALL-WINDOWS.md
 "@ | Out-File -Encoding ascii (Join-Path $App "README.txt")
+
+# Qt's software OpenGL fallback (about 20 MB) and translations are not used by a widgets-only app.
+Get-ChildItem -Recurse $App -Include "opengl32sw.dll" | Remove-Item -Force
+Get-ChildItem -Recurse -Directory $App -Filter "translations" | Remove-Item -Recurse -Force
 
 # Smoke test the console build before zipping.
 $Cli = Join-Path $App "l2loopcheck.exe"

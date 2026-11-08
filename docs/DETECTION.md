@@ -77,3 +77,29 @@ Loop likely > STP unstable > Storm without clear loop > Inconclusive > Healthy.
 *Inconclusive* is used when nothing positive was found but the capture is too
 short (<10 s or <200 frames), lost ≥20 % of frames, or is distorted by SPAN
 duplication.
+
+## Security checks (`detect/security.py`)
+
+All passive. Payloads are inspected in memory only to classify a frame; credentials, community strings and payloads are
+never stored. Severity is a category, and there is no overall score. `observed` findings are facts in the capture;
+`inferred` findings need checking on site.
+
+| Finding | Trigger (initial threshold) | Severity |
+|---|---|---|
+| `gateway-spoof` | A gateway named by DHCP is claimed by two MACs. Most-ARPed addresses are not assumed to be gateways | Critical |
+| `arp-reply-burst`, `arp-many-ips`, `arp-sweep` | 20 ARP replies/s; one MAC claims 16 IPs; 64 targets in 60 s | High, Medium, Medium |
+| `mac-flood` | 1000 new source MACs in 10 s | High |
+| `rogue-dhcp`, `rogue-ra` | Two servers or default routers in a VLAN. Same OUI (mesh or redundant pair): Medium. RA with lifetime 0 is ignored | High or Medium |
+| `dhcp-starvation`, `dhcpv6-server`, `icmp-redirect` | 50 client MACs in 60 s; any DHCPv6 server; any redirect | High, Medium, Medium |
+| `dtp-enabled`, `access-sees-vlans`, `trunk-port`, `double-tagged` | DTP seen; tags on a declared access port; tagged VLANs; 2+ tags | High, High, Medium, Medium |
+| `fhrp-exposed`, `routing-exposed` | HSRP/VRRP/GLBP or OSPF/EIGRP/RIP/PIM without strong authentication | Medium, High with the default HSRP string |
+| `name-poisoning`, `wpad` | LLMNR, NBT-NS or WPAD lookups | Medium |
+| `cleartext-login`, `http-basic` | Login commands or HTTP Basic in clear text | Critical |
+| `cleartext-service`, `snmp-default`, `smb1` | Telnet, FTP and similar with traffic beyond a bare SYN; default community; SMBv1 | High |
+| `snmp-v12`, `tls-old`, `ot-exposed` | SNMP v1/v2c; negotiated TLS 1.1 or older; BACnet, Modbus, S7 and similar | Medium |
+| `port-scan`, `host-sweep` | 100 ports on one host, or 64 hosts on one port, in 60 s | High |
+| `dns-tunnel` | 20 queries with 45+ character labels under one domain | Medium |
+
+A bare SYN never counts as a service being in use, so a port scan does not list every scanned port as exposed. Findings
+from unicast traffic are limited on an access port, and the report's coverage table says so. One device repeating a frame
+into several VLANs is reported as a multi-VLAN host and does not count towards a loop.

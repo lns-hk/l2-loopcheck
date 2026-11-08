@@ -17,6 +17,15 @@ instability, plus a report you can hand to the client.
   changes, two roots at once, MST region mismatches (STP/RSTP/MSTP/PVST+).
 * **Duplicate IP addresses**, and LLDP/CDP to show which switch port you are on.
 
+* **Security exposure, passively**: ARP spoofing, rogue DHCP and IPv6 routers, MAC flooding, trunk negotiation (DTP)
+  and VLAN exposure, gateway-redundancy and routing protocols without authentication, LLMNR/NBT-NS/WPAD, clear-text
+  logins, default SNMP communities, SMBv1, old TLS, scans, and exposed building or industrial protocols. A device
+  inventory is included. Credentials and payloads are never stored.
+
+The report states which checks a capture could not answer from where it was taken, so a missing finding is not read as
+a pass. A guided GUI covers authorisation, adapter choice, pre-flight checks and a 3-second test capture before anything
+starts.
+
 Verdicts: *Loop likely*, *STP unstable*, *Storm without clear loop*,
 *Inconclusive*, *Healthy*. Every finding separates what was observed (with
 frame numbers you can check in Wireshark) from the hypothesis.

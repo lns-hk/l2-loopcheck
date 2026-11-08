@@ -70,6 +70,29 @@ class SecurityChecks(unittest.TestCase):
         self.assertIn("no-frames", {f["code"] for f in r["verdict"]["findings"]})
 
 
+class RogueSeverity(unittest.TestCase):
+    def _sev(self, macs, lifetime=1800):
+        from l2loopcheck.detect.security import SecurityDetector, security_findings
+
+        s = SecurityDetector().summary()
+        s["router_advertisers"] = [{"ip": "fe80::1", "mac": m, "vlan": "untagged", "frames": 1, "first_frame": 1,
+                                    "router_lifetime": lifetime} for m in macs]
+        return [f["severity"] for f in security_findings(s, [], [], {}, "access") if f["code"] == "rogue-ra"]
+
+    def test_same_vendor_is_a_review_item(self):
+        self.assertEqual(self._sev(["02:00:5e:00:00:01", "02:00:5e:00:00:02"]), ["warning"])
+
+    def test_different_vendors_is_high(self):
+        self.assertEqual(self._sev(["02:00:5e:00:00:01", "06:11:22:00:00:02"]), ["high"])
+
+    def test_zero_lifetime_routers_do_not_count(self):
+        self.assertEqual(self._sev(["02:00:5e:00:00:01", "06:11:22:00:00:02"], lifetime=0), [])
+
+    def test_most_arped_address_is_not_assumed_to_be_the_gateway(self):
+        codes = {f["code"] for f in run("duplicate-ip")["verdict"]["findings"]}
+        self.assertNotIn("gateway-spoof", codes)
+
+
 class MultiVlanHost(unittest.TestCase):
     def test_not_called_a_loop(self):
         r = run("multi-vlan-host")

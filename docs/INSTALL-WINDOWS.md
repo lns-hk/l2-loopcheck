@@ -40,36 +40,35 @@ Control** is switched on (Windows 11, *Windows Security → App & browser
 control*), it blocks unsigned programs and offers no "Run anyway". In that case
 run l2-loopcheck from source instead (see the end of this page).
 
-## 3. Start a capture in the GUI
+## 3. Run a check in the GUI
 
-1. Plug the laptop into the switch port: an access port in the VLAN with the
-   problem, or a SPAN/mirror port. Use a wired adapter; Wi-Fi only sees a
-   fraction of the traffic.
-2. In **Network adapter**, pick the adapter by its Windows name, for example
-   `Ethernet 2  [\Device\NPF_{...}]`. USB Ethernet adapters usually appear as
-   `Ethernet 2`, `Ethernet 3` and so on. Ignore VPN, Hyper-V (`vEthernet`) and
-   loopback adapters. Press **Refresh** after plugging in a USB adapter.
-3. Press **Start**.
-4. Watch **REPEATED FRAMES PER SECOND**. Anything above 0 that does not go
-   away means frames are circulating.
-5. To find the loop, unplug one suspect cable or uplink at a time. After each
-   change, type what you did in the mark box (e.g. `unplugged 2/F uplink`)
-   and press Enter. When the number drops to 0, the last mark tells you which
-   cable closed the loop.
-6. Optional: **Send loop probe...**. It sends at most 3 broadcast test frames
-   and stops as soon as one comes back. Use it only with the site owner's
-   permission. If Npcap was installed in administrator-only mode, start
-   l2-loopcheck with **Run as administrator** to use the probe.
-7. Press **Stop**, then **Open report** (opens in your browser) or **Open
-   folder**. Use **Report details...** once to put your company, logo and case
-   reference on reports.
+Choose **Run a check** on the home screen. The guide has five steps, and **Next** stays disabled until each step is
+complete.
 
-Runs are saved in `Documents\l2-loopcheck\<date-time>\`: the capture files,
-`marks.json`, `result.json` and `report.html`. The saved capture is limited to
-2 GB. Files around your marks are always kept. Open the `.pcap` files in
-Wireshark to check the frame numbers quoted in the report.
+1. **Site and authorisation.** Enter the site and your name, and confirm that you are authorised to capture on this
+   network. These go on the report.
+2. **Network adapter.** Plug into the switch: an access port, or a SPAN/mirror port if you want to see other hosts'
+   traffic. The tool suggests a wired adapter with a live link and explains why. VPN and loopback adapters are refused.
+   Wi-Fi and virtual adapters (Hyper-V `vEthernet`) raise a warning. Say how the port is connected, then confirm.
+3. **Pre-flight checks.** Checks Wireshark, Npcap, disk space and the link, and runs a 3-second test capture. It only
+   listens. Problems block the next step. Warnings must be acknowledged.
+4. **Plan.** Choose how long to capture. Ten minutes is the recommended minimum. The loop probe is off by default; it is
+   the only thing this tool ever transmits, and it needs the site owner's agreement.
+5. **Capture.** Watch **repeated frames per second**. To find a loop, unplug one suspect cable at a time and add a mark
+   each time. When the number drops to 0, your last mark names the cable.
 
-To analyse an existing capture, use **Open capture file...**.
+Capture stops at the planned time or when you press **Stop**, and goes straight to the results page, with **Open full
+report in browser** at the top right. From there you can also save the HTML, save the JSON, save a **redacted** copy for
+sharing, or open the folder.
+
+Everything is saved in `Documents\l2-loopcheck\<date-time>\`: the capture files, `marks.json`, `result.json` and
+`report.html`. The saved capture is limited to 2 GB by default, and files around your marks are always kept.
+
+Check the list of **checks that were limited** in the report. An access port only sees flooded traffic and this
+computer's own traffic, so clear-text logins between other hosts need a SPAN port. A missing finding there is not a pass.
+
+**Analyse a capture file** runs the same analysis on a `.pcap` or `.pcapng` you already have. **Open a saved result**
+reopens an earlier `result.json`.
 
 ## Command line
 
@@ -77,6 +76,7 @@ To analyse an existing capture, use **Open capture file...**.
 terminal in the folder (in Explorer: right-click → **Open in Terminal**):
 
 ```powershell
+.\l2loopcheck.exe preflight                        # check this computer and suggest an adapter
 .\l2loopcheck.exe interfaces                       # adapters with their Windows names
 .\l2loopcheck.exe live -i "Ethernet 2" --duration 10m
 .\l2loopcheck.exe analyze capture.pcapng --html report.html

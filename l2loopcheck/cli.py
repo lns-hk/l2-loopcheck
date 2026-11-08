@@ -216,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from .gui.app import run_gui
         except ImportError as e:
-            print(f"The GUI needs Dear PyGui: pip install 'l2-loopcheck[gui]' ({e})", file=sys.stderr)
+            print(f"The GUI needs PySide6: pip install 'l2-loopcheck[gui]' ({e})", file=sys.stderr)
             return 2
         return run_gui()
     return 1

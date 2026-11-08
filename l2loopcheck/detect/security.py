@@ -103,7 +103,6 @@ class SecurityDetector:
         self.smb1: dict[str, dict] = {}
         self.dhcp_servers: dict[tuple, dict] = {}
         self.dhcp_clients = _WindowCounter(60.0)
-        self.gateways: Counter = Counter()
         self.dhcp_routers: set = set()
         self.ra: dict[tuple, dict] = {}
         self.dhcp6: dict[tuple, dict] = {}
@@ -196,7 +195,6 @@ class SecurityDetector:
         if op == 1:
             if spa != tpa and any(spa):
                 self.arp_sweep.add(sha, tpa, ts, index)
-            self.gateways[tpa] += 1
         elif op == 2:
             key = (sha, int(ts))
             n = self.arp_reply_seconds.get(key, 0) + 1
@@ -479,8 +477,7 @@ class SecurityDetector:
                           "roles": sorted(h["roles"]), "protocols": [p for p, _n in h["protocols"].most_common(4)]})
         layer2 = {k: {**v, "senders": sorted(v["senders"])} for k, v in self.layer2.items()}
         many_ips = [{"mac": mac_str(m), "ips": len(s)} for m, s in self.arp_claims.items() if len(s) >= ARP_MANY_IPS]
-        gateways = sorted(ip4_str(k) for k in self.dhcp_routers) or [
-            ip4_str(k) for k, _n in self.gateways.most_common(1) if any(k)]
+        gateways = sorted(ip4_str(k) for k in self.dhcp_routers)  # only addresses the network itself names as gateway
 
         def peaks(counter, limit, label):
             out = []
@@ -555,6 +552,11 @@ def _svc(e: dict) -> str:
     return f"{e['server']}" + (f":{e['port']}" if e.get("port") else "")
 
 
+def _same_vendor(macs: list) -> bool:
+    """All MACs share an OUI: more likely a mesh or redundant pair than an intruder."""
+    return len({m[:8].lower() for m in macs}) == 1
+
+
 def _by_vlan(items: list) -> dict:
     out: dict = {}
     for i in items:
@@ -591,7 +593,8 @@ def security_findings(s: dict, duplicate_ips: list, neighbours: list, stp: dict,
                       "Enable port security or MAC limits on access ports.", [m["first_frame"]], "inferred"))
     for vlan, servers in _by_vlan(s["dhcp_servers"]).items():
         if len(servers) >= 2:
-            out.append(_f("high", "rogue-dhcp", f"More than one DHCP server answering in VLAN {vlan}",
+            out.append(_f("warning" if _same_vendor([x["mac"] for x in servers]) else "high", "rogue-dhcp",
+                          f"More than one DHCP server answering in VLAN {vlan}",
                           f"Servers: {_names(servers, 'server')}.",
                           "One may be rogue, handing out a wrong gateway or DNS server. Redundant DHCP is the benign explanation.",
                           "Confirm each server is authorised, and enable DHCP snooping.",
@@ -601,9 +604,11 @@ def security_findings(s: dict, duplicate_ips: list, neighbours: list, stp: dict,
                       f"{e['count']} different client MACs sent DHCP Discover within 60 s.",
                       "An attacker exhausting the pool, or many devices booting after a power event.",
                       "Enable DHCP snooping with a rate limit.", [e["first_frame"]], "inferred"))
-    for vlan, routers in _by_vlan(s["router_advertisers"]).items():
+    default_routers = [x for x in s["router_advertisers"] if x["router_lifetime"]]  # lifetime 0: "not a default router"
+    for vlan, routers in _by_vlan(default_routers).items():
         if len(routers) >= 2:
-            out.append(_f("high", "rogue-ra", f"More than one IPv6 router advertising in VLAN {vlan}",
+            out.append(_f("warning" if _same_vendor([x["mac"] for x in routers]) else "high", "rogue-ra",
+                          f"More than one IPv6 router advertising in VLAN {vlan}",
                           f"Router Advertisements from {_names(routers, 'mac')}.",
                           "A rogue RA can redirect IPv6 traffic, even on a network believed to be IPv4-only.",
                           "Confirm each router, and enable RA Guard on access ports.",
