@@ -34,7 +34,7 @@ def _resolve_windows_interface(args) -> None:
 def run_live(args) -> int:
     _resolve_windows_interface(args)
     try:
-        s = LiveSession(args.interface, args.backend, args.out, args.max_total_mb)
+        s = LiveSession(args.interface, args.backend, args.out, args.max_total_mb, vantage=args.vantage)
     except CaptureToolMissing as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

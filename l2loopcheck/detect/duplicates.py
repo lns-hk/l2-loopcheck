@@ -170,6 +170,7 @@ class DuplicateDetector:
             "common_period": common,
             "cross_vlan": [_group_dict(g) for g in sorted(cross_vlan, key=lambda g: -g.copies)[:10]],
             "cross_vlan_count": len(cross_vlan),
+            "cross_vlan_sources": len({g.src for g in cross_vlan}),
             "top_sources": top_sources,
             "examples": [_group_dict(g) for g in examples],
         }

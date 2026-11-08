@@ -14,6 +14,7 @@ from typing import Iterable, Optional
 from . import __version__
 from .decode import decode
 from .detect.duplicates import DuplicateDetector
+from .detect.security import SecurityDetector, coverage
 from .detect.stp import StpDetector
 from .detect.traffic import DuplicateIpDetector, NeighbourCollector, TrafficDetector, storm_control_clipping
 from .pcapio import CaptureStats, Packet
@@ -45,6 +46,9 @@ class Analyzer:
         self.traffic = TrafficDetector()
         self.dupip = DuplicateIpDetector()
         self.neigh = NeighbourCollector()
+        self.security = SecurityDetector()
+        self.declared_vantage: Optional[str] = None  # access / span / trunk, as stated by the engineer
+        self.engagement: dict = {}  # site, authorisation and pre-flight results for the report
         self.first_ts: Optional[float] = None
         self.last_ts: Optional[float] = None
         self.packets = 0
@@ -105,6 +109,7 @@ class Analyzer:
             self.dupip.feed(f, pkt.index, ts)
         if f.neighbour:
             self.neigh.feed(f.neighbour, pkt.index, f.src, f.vlans)
+        self.security.feed(f, pkt.index, ts)
         if f.probe:
             self._probe_seen(f.probe, ts, pkt.index, own=False)
 
@@ -192,6 +197,14 @@ class Analyzer:
             "marks": [{"ts": m.ts, "label": m.label} for m in self.marks],
             "timeline": series,
         }
+        security = self.security.summary()
+        vantage = self.declared_vantage or security["observed_vantage"]
+        result["security"] = security
+        result["capture"]["vantage"] = vantage
+        result["capture"]["vantage_declared"] = self.declared_vantage
+        result["capture"]["vantage_observed"] = security["observed_vantage"]
+        result["engagement"] = self.engagement
+        result["coverage"] = coverage(security, vantage, self.packets)
         result["verdict"] = judge(result)
         return result
 
@@ -218,8 +231,10 @@ def _probe_result(r: ProbeRecord) -> dict:
         "nonce": r.nonce, "sent": len(r.sent), "platform": r.platform, "interface": r.interface,
         "sent_at": [ts for _seq, ts in r.sent], "copies_by_seq": returns,
         "loop_confirmed": confirmed,
-        "first_return_frame": min((i for v in r.seen.values() for _t, i in v), default=None),
-        "ambiguous": (not confirmed) and max_seen == 1,
+        "first_return_frame": (min((i for v in r.seen.values() for _t, i in v), default=None)
+                               if confirmed else None),
+        # Npcap and BPF hand us our own transmission once, so one copy is the normal negative result there.
+        "ambiguous": (not confirmed) and max_seen == 1 and r.platform not in ("win32", "darwin"),
     }
 
 
