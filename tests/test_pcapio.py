@@ -1,11 +1,11 @@
 import io
-import shutil
 import struct
 import subprocess
 import tempfile
 import unittest
 import os
 
+from l2loopcheck.capture import find_tshark
 from l2loopcheck.pcapio import CaptureFormatError, CaptureReader
 from l2loopcheck.synth import SCENARIOS, to_pcap_bytes
 
@@ -52,10 +52,10 @@ class PcapIO(unittest.TestCase):
         with self.assertRaises(CaptureFormatError):
             list(CaptureReader(io.BytesIO(b"hello world, not a capture")))
 
-    @unittest.skipUnless(shutil.which("tshark") or os.path.exists("/Applications/Wireshark.app/Contents/MacOS/tshark"), "tshark not installed")
+    @unittest.skipUnless(find_tshark(), "tshark not installed")
     def test_tshark_oracle(self):
         """Independent check: tshark must count the same frames, broadcasts and BPDUs."""
-        tshark = shutil.which("tshark") or "/Applications/Wireshark.app/Contents/MacOS/tshark"
+        tshark = find_tshark()
         from l2loopcheck.cli import analyze_file
         with tempfile.TemporaryDirectory() as d:
             for name in ("stp-unstable", "loop", "cross-vlan"):

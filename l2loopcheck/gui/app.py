@@ -1,420 +1,228 @@
-"""Dear PyGui front end for onsite engineers: no commands to type.
-
-Flow: pick the network adapter -> Start -> watch the big REPEATS/s number while
-unplugging suspect cables, adding a mark each time -> Stop -> Open report.
-Also: open an existing capture file, send the loop probe (with confirmation),
-and fill in report details (company, logo, engineer, case reference, site).
-"""
+"""The application window: home screen, wizard, results."""
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
-import threading
 import time
-import webbrowser
-from typing import Optional
 
-import dearpygui.dearpygui as dpg
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QInputDialog,
+                               QLineEdit, QMainWindow, QMessageBox, QPushButton, QSpinBox, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import __version__
-from ..capture import WIRESHARK_URL, CaptureToolMissing, list_interfaces
-from ..live import LiveSession
-
-SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".l2loopcheck", "settings.json")
-DEFAULT_RUNS = os.path.join(os.path.expanduser("~"), "Documents", "l2-loopcheck")
-BRANDING_KEYS = ("company", "logo_path", "engineer", "case_ref", "site")
-
-GREEN, AMBER, RED, GREY = (46, 160, 67), (230, 150, 20), (220, 50, 40), (150, 155, 160)
-VERDICT_COLOURS = {"Loop likely": RED, "STP unstable": AMBER, "Storm without clear loop": AMBER,
-                   "Inconclusive": GREY, "Healthy": GREEN}
+from ..cli import analyze_file, write_outputs
+from . import theme
+from .common import button, card, default_runs_dir, label, load_settings, plain, run_task, save_settings
+from .results import ResultsPage
+from .wizard import VANTAGE, Wizard
 
 
-def _font_candidates() -> list[str]:
-    if sys.platform == "darwin":
-        return ["/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"]
-    if os.name == "nt":
-        windir = os.environ.get("WINDIR", r"C:\Windows")
-        return [os.path.join(windir, "Fonts", f) for f in ("segoeui.ttf", "arial.ttf")]
-    return ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf"]
+def app_icon() -> QIcon:
+    bundle = getattr(sys, "_MEIPASS", None)
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for p in ([os.path.join(bundle, "l2-loopcheck.ico")] if bundle else []) + [
+            os.path.join(root, "packaging", "windows", "l2-loopcheck.ico"),
+            os.path.join(root, "packaging", "linux", "l2-loopcheck.png")]:
+        if os.path.isfile(p):
+            return QIcon(p)
+    return QIcon()
 
 
-def load_settings() -> dict:
-    try:
-        with open(SETTINGS_PATH, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+class SettingsDialog(QDialog):
+    def __init__(self, parent: QWidget, settings: dict) -> None:
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("Report and storage settings")
+        self.setMinimumWidth(520)
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        self.company = QLineEdit(settings.get("company", ""))
+        self.logo = QLineEdit(settings.get("logo_path", ""))
+        row = QHBoxLayout()
+        row.addWidget(self.logo, 1)
+        row.addWidget(button("Browse...", self._logo))
+        self.folder = QLineEdit(settings.get("runs_dir") or default_runs_dir())
+        self.size = QSpinBox()
+        self.size.setRange(100, 100000)
+        self.size.setSuffix(" MB")
+        self.size.setValue(int(settings.get("max_total_mb", 2048)))
+        form.addRow("Company on reports", self.company)
+        form.addRow("Logo (PNG or JPG)", row)
+        form.addRow("Save runs in", self.folder)
+        form.addRow("Capture size limit", self.size)
+        lay.addLayout(form)
+        box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        box.accepted.connect(self._save)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+
+    def _logo(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(self, "Logo", "", "Images (*.png *.jpg *.jpeg)")
+        if p:
+            self.logo.setText(p)
+
+    def _save(self) -> None:
+        self.settings.update({"company": self.company.text().strip(), "logo_path": self.logo.text().strip(),
+                              "runs_dir": self.folder.text().strip(), "max_total_mb": self.size.value()})
+        save_settings(self.settings)
+        self.accept()
 
 
-def save_settings(s: dict) -> None:
-    os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
-    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-        json.dump(s, f, indent=2)
-
-
-def open_path(path: str) -> None:
-    if path.endswith(".html"):
-        webbrowser.open("file://" + os.path.abspath(path))
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", path])
-    elif os.name == "nt":
-        os.startfile(path)  # noqa: S606 - opening the run folder in Explorer
-    else:
-        subprocess.Popen(["xdg-open", path])
-
-
-class App:
+class MainWindow(QMainWindow):
     def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle(f"l2-loopcheck {__version__}")
+        self.setWindowIcon(app_icon())
+        self.resize(1100, 800)
         self.settings = load_settings()
-        self.session: Optional[LiveSession] = None
-        self.interfaces: list[tuple[str, str]] = []
-        self.last_result: Optional[dict] = None
-        self.last_run_dir: Optional[str] = None
-        self.big_font = self.mid_font = None
-        self._last_ui = 0.0
-        self._pending: list = []  # callables to run on the UI thread
-        self._lock = threading.Lock()
+        self.wizard: Wizard | None = None
+        central = QWidget()
+        lay = QVBoxLayout(central)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        header = QWidget()
+        header.setObjectName("Header")
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(24, 12, 24, 12)
+        hl.addWidget(label("l2-loopcheck", "AppTitle", False))
+        hl.addWidget(label("Network health and security check", "HeaderNote", False))
+        hl.addStretch(1)
+        hl.addWidget(label(f"v{__version__}", "HeaderNote", False))
+        lay.addWidget(header)
+        self.stack = QStackedWidget()
+        lay.addWidget(self.stack, 1)
+        self.setCentralWidget(central)
+        self.home_page = self._build_home()
+        self.results = ResultsPage(self.settings)
+        self.results.home.connect(self.show_home)
+        self.stack.addWidget(self.home_page)
+        self.stack.addWidget(self.results)
 
-    # --------------------------------------------------------------- helpers
-    def later(self, fn) -> None:
-        with self._lock:
-            self._pending.append(fn)
+    def _build_home(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("Page")
+        outer = QHBoxLayout(w)
+        outer.addStretch(1)
+        col = QVBoxLayout()
+        col.setSpacing(14)
+        col.addStretch(1)
+        col.addWidget(label("What would you like to do?", "PageTitle"))
+        col.addWidget(label("Find Layer-2 loops, broadcast storms, spanning-tree faults and security weaknesses from "
+                            "captured traffic. It only listens, unless you choose to send the loop probe.", "Muted"))
+        for title, text, fn in (("Run a check", "Connect this computer to the network. A step-by-step guide takes you to a report.", self.start_wizard),
+                                ("Analyse a capture file", "Check a .pcap or .pcapng file you already have.", self.analyse_file),
+                                ("Open a saved result", "Reopen a result.json from an earlier run.", self.open_saved)):
+            b = QPushButton(f"{title}\n{text}")
+            b.setObjectName("Choice")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, f=fn: f())
+            col.addWidget(b)
+        self.busy = label("", "Muted")
+        col.addWidget(self.busy)
+        col.addStretch(2)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(button("Report and storage settings...", self.open_settings))
+        col.addLayout(row)
+        holder = QWidget()
+        holder.setLayout(col)
+        holder.setFixedWidth(760)
+        outer.addWidget(holder)
+        outer.addStretch(1)
+        return w
 
-    def status(self, msg: str, colour=GREY) -> None:
-        dpg.set_value("status", msg)
-        dpg.configure_item("status", color=colour)
+    def open_settings(self) -> None:
+        SettingsDialog(self, self.settings).exec()
 
-    def branding(self) -> dict:
-        return {k: self.settings.get(k, "") for k in BRANDING_KEYS}
+    def show_home(self) -> None:
+        self._drop_wizard()
+        self.busy.setText("")
+        self.stack.setCurrentWidget(self.home_page)
 
-    def runs_dir(self) -> str:
-        base = self.settings.get("runs_dir") or DEFAULT_RUNS
-        return os.path.join(base, time.strftime("%Y%m%d-%H%M%S"))
+    def _drop_wizard(self) -> None:
+        if self.wizard is not None:
+            self.stack.removeWidget(self.wizard)
+            self.wizard.deleteLater()
+            self.wizard = None
 
-    # ------------------------------------------------------------ interfaces
-    def refresh_interfaces(self, *_):
+    def start_wizard(self) -> None:
+        self._drop_wizard()
+        self.wizard = Wizard(self.settings)
+        self.wizard.cancelled.connect(self.show_home)
+        self.wizard.finished.connect(self.show_result)
+        self.stack.addWidget(self.wizard)
+        self.stack.setCurrentWidget(self.wizard)
+
+    def show_result(self, result: dict, run_dir: str) -> None:
+        self._drop_wizard()
+        self.results.show_result(result, run_dir)
+        self.stack.setCurrentWidget(self.results)
+
+    def analyse_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Open a capture file", "", "Captures (*.pcap *.pcapng *.cap);;All files (*)")
+        if not path:
+            return
+        names = [v[1] for v in VANTAGE]
+        pick, ok = QInputDialog.getItem(self, "Where was this captured?", "Capture point:", names, len(names) - 1, False)
+        if not ok:
+            return
+        vantage = next(v[0] for v in VANTAGE if v[1] == pick) or None
+        base = self.settings.get("runs_dir") or default_runs_dir()
+        run_dir = os.path.join(base, time.strftime("%Y%m%d-%H%M%S"))
+        branding = {k: self.settings.get(k, "") for k in ("company", "logo_path")}
+
+        def work() -> dict:
+            r = analyze_file(path, vantage)
+            os.makedirs(run_dir, exist_ok=True)
+            write_outputs(r, os.path.join(run_dir, "result.json"), os.path.join(run_dir, "report.html"), branding)
+            return r
+
+        self.busy.setText(f"Analysing {os.path.basename(path)}...")
+        run_task(work, lambda r: self.show_result(r, run_dir), self._analyse_failed)
+
+    def _analyse_failed(self, message: str) -> None:
+        self.busy.setText("")
+        QMessageBox.critical(self, "Could not analyse this file", message)
+
+    def open_saved(self) -> None:
+        start = self.settings.get("runs_dir") or default_runs_dir()
+        path, _ = QFileDialog.getOpenFileName(self, "Open a saved result", start, "Result (result.json *.json)")
+        if not path:
+            return
         try:
-            self.interfaces = list_interfaces("auto")
-        except CaptureToolMissing:
-            self.interfaces = []
-            dpg.configure_item("missing_tool", show=True)
+            with open(path, encoding="utf-8") as f:
+                r = json.load(f)
+            r["verdict"], r["capture"]  # noqa: B018 - reject files that are not results
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            QMessageBox.critical(self, "Not a saved result", str(e))
             return
-        except Exception as e:  # noqa: BLE001
-            self.interfaces = []
-            self.status(f"Could not list adapters: {e}", RED)
-            return
-        items = [self._iface_label(n, d) for n, d in self.interfaces]
-        dpg.configure_item("iface", items=items)
-        last = self.settings.get("interface")
-        pick = next((self._iface_label(n, d) for n, d in self.interfaces if n == last), items[0] if items else "")
-        dpg.set_value("iface", pick)
-        self.status(f"{len(items)} network adapters found. Pick the one plugged into the switch, then Start.")
+        self.show_result(r, os.path.dirname(path))
 
-    @staticmethod
-    def _iface_label(name: str, desc: str) -> str:
-        return f"{desc}  [{name}]" if desc else name
-
-    def selected_iface(self) -> Optional[str]:
-        label = dpg.get_value("iface")
-        for n, d in self.interfaces:
-            if self._iface_label(n, d) == label:
-                return n
-        return None
-
-    # ---------------------------------------------------------- start / stop
-    def start(self, *_):
-        if self.session:
-            return
-        iface = self.selected_iface()
-        if not iface:
-            self.status("Pick a network adapter first.", RED)
-            return
-        self.settings["interface"] = iface
-        save_settings(self.settings)
-        try:
-            self.session = LiveSession(iface, "auto", self.runs_dir(),
-                                       int(self.settings.get("max_total_mb", 2048)),
-                                       on_end=lambda err: self.later(lambda: self._capture_ended(err)))
-            self.session.start()
-        except CaptureToolMissing:
-            dpg.configure_item("missing_tool", show=True)
-            self.session = None
-            return
-        except Exception as e:  # noqa: BLE001
-            self.session = None
-            self.status(f"Could not start capture: {e}", RED)
-            return
-        dpg.configure_item("btn_start", show=False)
-        dpg.configure_item("btn_stop", show=True)
-        dpg.configure_item("live_group", enabled=True)
-        dpg.configure_item("result_group", show=False)
-        dpg.set_value("marks_list", "")
-        self.status(f"Capturing on {iface}. Unplug suspect cables one at a time and add a mark each time.", GREEN)
-
-    def _capture_ended(self, err: Optional[str]) -> None:
-        if self.session and err:
-            self.status(f"Capture stopped: {err}", RED)
-            self.stop()
-
-    def stop(self, *_):
-        s = self.session
-        if not s:
-            return
-        self.status("Stopping and writing the report...", AMBER)
-        dpg.configure_item("btn_stop", enabled=False)
-
-        def work():
-            r = s.stop(self.branding())
-            self.later(lambda: self._show_result(r, s.run_dir, s.error))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    def _show_result(self, r: dict, run_dir: str, err: Optional[str] = None) -> None:
-        self.session = None
-        self.last_result, self.last_run_dir = r, run_dir
-        dpg.configure_item("btn_stop", show=False, enabled=True)
-        dpg.configure_item("btn_start", show=True)
-        v = r["verdict"]
-        dpg.set_value("verdict", v["label"])
-        dpg.configure_item("verdict", color=VERDICT_COLOURS.get(v["label"], GREY))
-        dpg.set_value("verdict_conf", f"confidence: {v['confidence']}   ·   {r['capture']['packets']:,} frames, "
-                                      f"{r['capture']['duration_s']:.0f} s")
-        lines = []
-        for f in v["findings"][:8]:
-            lines.append(f"[{f['severity'].upper()}] {f['title']}\n    {f['observed']}")
-        lines.append("\nNext steps:\n" + "\n".join(f"  - {x}" for x in v["next_steps"]))
-        dpg.set_value("findings", "\n".join(lines))
-        dpg.configure_item("result_group", show=True)
-        self.status(("Capture error: " + err) if err else f"Report saved in {run_dir}", RED if err else GREEN)
-
-    # ----------------------------------------------------------------- marks
-    def add_mark(self, *_):
-        if not self.session:
-            return
-        label = dpg.get_value("mark_text").strip() or f"Mark {len(self.session.marks()) + 1}"
-        m = self.session.add_mark(label)
-        dpg.set_value("mark_text", "")
-        n = len(self.session.marks())
-        dpg.set_value("marks_list", dpg.get_value("marks_list") +
-                      f"{n}. {time.strftime('%H:%M:%S', time.localtime(m['ts']))}  {m['label']}\n")
-        dpg.focus_item("mark_text")
-
-    # ----------------------------------------------------------------- probe
-    def ask_probe(self, *_):
-        if not self.session:
-            self.status("Start a capture before sending the probe.", AMBER)
-            return
-        dpg.configure_item("probe_modal", show=True)
-
-    def run_probe(self, *_):
-        dpg.configure_item("probe_modal", show=False)
-        s = self.session
-        if not s:
-            return
-        dpg.configure_item("btn_probe", enabled=False)
-        self.status("Sending probe (max 3 frames)...", AMBER)
-
-        def work():
-            try:
-                res = s.run_probe(log=lambda m: self.later(lambda m=m: self.status(m, AMBER)))
-                msg = ("Probe came back: LOOP CONFIRMED on this port." if res["loop_confirmed"]
-                       else "Probe did not come back (no loop seen from this port).")
-                self.later(lambda: self.status(msg, RED if res["loop_confirmed"] else GREEN))
-            except Exception as e:  # noqa: BLE001
-                self.later(lambda e=e: self.status(f"Probe not available: {e}", RED))
-            finally:
-                self.later(lambda: dpg.configure_item("btn_probe", enabled=True))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    # ------------------------------------------------------------- open file
-    def open_file(self, sender, app_data):
-        path = app_data.get("file_path_name") if app_data else None
-        if not path or not os.path.isfile(path):
-            return
-        self.status(f"Analysing {os.path.basename(path)}...", AMBER)
-
-        def work():
-            from ..cli import analyze_file, write_outputs
-
-            try:
-                r = analyze_file(path)
-                run = self.runs_dir()
-                os.makedirs(run, exist_ok=True)
-                write_outputs(r, os.path.join(run, "result.json"), os.path.join(run, "report.html"), self.branding())
-                self.later(lambda: self._show_result(r, run))
-            except Exception as e:  # noqa: BLE001
-                self.later(lambda e=e: self.status(f"Could not analyse file: {e}", RED))
-
-        threading.Thread(target=work, daemon=True).start()
-
-    # -------------------------------------------------------------- settings
-    def save_details(self, *_):
-        for k in BRANDING_KEYS:
-            self.settings[k] = dpg.get_value(f"set_{k}")
-        self.settings["runs_dir"] = dpg.get_value("set_runs_dir")
-        save_settings(self.settings)
-        dpg.configure_item("details_win", show=False)
-        self.status("Report details saved.", GREEN)
-
-    # ---------------------------------------------------------------- update
-    def tick(self) -> None:
-        with self._lock:
-            pending, self._pending = self._pending, []
-        for fn in pending:
-            fn()
-        now = time.time()
-        if not self.session or now - self._last_ui < 0.5:
-            return
-        self._last_ui = now
-        snap = self.session.snapshot()
-        rep = snap["copies"]
-        dpg.set_value("big_number", f"{rep:,}")
-        dpg.configure_item("big_number", color=GREEN if rep == 0 else (AMBER if rep < 50 else RED))
-        dpg.set_value("stats", f"Broadcast+multicast/s: {snap['flooded']:,}    All frames/s: {snap['total']:,}    "
-                               f"Topology changes: {snap['tc_total']}    Elapsed: {snap['elapsed']:.0f} s    "
-                               f"Saved: {snap['saved_mb']:.0f} MB")
-        series = self.session.series(300)
-        if series:
-            t0 = series[-1]["t"]
-            xs = [float(s["t"] - t0) for s in series]
-            dpg.set_value("s_flood", [xs, [float(s["flooded"]) for s in series]])
-            dpg.set_value("s_copy", [xs, [float(s["copies"]) for s in series]])
-            marks = [float(m["ts"] - t0) for m in self.session.marks() if m["ts"] - t0 >= xs[0]]
-            dpg.set_value("s_marks", [marks])
-            dpg.fit_axis_data("x_axis")
-            dpg.fit_axis_data("y_axis")
-
-    # ---------------------------------------------------------------- layout
-    def build(self) -> None:
-        with dpg.font_registry():
-            path = next((p for p in _font_candidates() if os.path.isfile(p)), None)
-            if path:
-                default = dpg.add_font(path, 16)
-                self.mid_font = dpg.add_font(path, 26)
-                self.big_font = dpg.add_font(path, 96)
-                dpg.bind_font(default)
-
-        with dpg.file_dialog(directory_selector=False, show=False, callback=self.open_file, tag="file_dlg",
-                             width=700, height=420, modal=True):
-            dpg.add_file_extension("Captures (*.pcap *.pcapng *.cap){.pcap,.pcapng,.cap}")
-            dpg.add_file_extension(".*")
-
-        with dpg.window(label="Wireshark needed", modal=True, show=False, tag="missing_tool", width=520,
-                        no_resize=True, pos=(180, 160)):
-            dpg.add_text("No capture tool was found on this computer.", wrap=480)
-            dpg.add_text("Install Wireshark (it includes dumpcap and, on Windows, Npcap), then press Refresh.",
-                         wrap=480)
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="Open download page", callback=lambda: webbrowser.open(WIRESHARK_URL))
-                dpg.add_button(label="Close", callback=lambda: dpg.configure_item("missing_tool", show=False))
-
-        with dpg.window(label="Send loop probe?", modal=True, show=False, tag="probe_modal", width=560,
-                        no_resize=True, pos=(160, 160)):
-            dpg.add_text("The probe sends at most 3 broadcast test frames, one per second, from this computer's "
-                         "own network address, and stops as soon as one comes back. If a frame comes back, "
-                         "this port is part of a loop.", wrap=520)
-            dpg.add_text("Only use it with the site owner's permission.", color=AMBER)
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="Send probe", callback=self.run_probe)
-                dpg.add_button(label="Cancel", callback=lambda: dpg.configure_item("probe_modal", show=False))
-
-        with dpg.window(label="Report details", show=False, tag="details_win", width=560, pos=(160, 100)):
-            dpg.add_text("Shown on the report. Leave blank for a neutral report.", color=GREY)
-            for k, label in (("company", "Company"), ("logo_path", "Logo file (PNG/JPG)"),
-                             ("engineer", "Engineer"), ("case_ref", "Case reference"), ("site", "Site / location")):
-                dpg.add_input_text(label=label, tag=f"set_{k}", default_value=self.settings.get(k, ""), width=340)
-            dpg.add_input_text(label="Save runs in", tag="set_runs_dir",
-                               default_value=self.settings.get("runs_dir", DEFAULT_RUNS), width=340)
-            dpg.add_button(label="Save", callback=self.save_details)
-
-        with dpg.window(tag="main"):
-            with dpg.group(horizontal=True):
-                dpg.add_text("Network adapter")
-                dpg.add_combo([], tag="iface", width=420)
-                dpg.add_button(label="Refresh", callback=self.refresh_interfaces)
-                dpg.add_button(label="  Start  ", tag="btn_start", callback=self.start)
-                dpg.add_button(label="  Stop  ", tag="btn_stop", callback=self.stop, show=False)
-                dpg.add_spacer(width=10)
-                dpg.add_button(label="Open capture file...", callback=lambda: dpg.show_item("file_dlg"))
-                dpg.add_button(label="Report details...", callback=lambda: dpg.show_item("details_win"))
-            dpg.add_text("", tag="status", wrap=1000)
-            dpg.add_separator()
-
-            with dpg.group(tag="live_group"):
-                with dpg.group(horizontal=True):
-                    with dpg.group():
-                        dpg.add_text("REPEATED FRAMES PER SECOND", color=GREY)
-                        dpg.add_text("-", tag="big_number", color=GREY)
-                        if self.big_font:
-                            dpg.bind_item_font("big_number", self.big_font)
-                        dpg.add_text("0 = no frames circulating. When you unplug the looped cable this drops to 0.",
-                                     color=GREY, wrap=330)
-                    with dpg.group():
-                        dpg.add_text("Add a mark each time you change something:")
-                        dpg.add_input_text(tag="mark_text", hint="e.g. unplugged 2/F uplink", width=360,
-                                           on_enter=True, callback=self.add_mark)
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(label="Add mark", callback=self.add_mark)
-                            dpg.add_button(label="Send loop probe...", tag="btn_probe", callback=self.ask_probe)
-                        dpg.add_input_text(tag="marks_list", multiline=True, readonly=True, width=520, height=110)
-                dpg.add_text("", tag="stats")
-                with dpg.plot(label="Last 5 minutes", height=260, width=-1):
-                    dpg.add_plot_legend()
-                    dpg.add_plot_axis(dpg.mvXAxis, label="seconds (0 = now)", tag="x_axis")
-                    with dpg.plot_axis(dpg.mvYAxis, label="frames/s", tag="y_axis"):
-                        dpg.add_line_series([], [], label="Broadcast+multicast/s", tag="s_flood")
-                        dpg.add_line_series([], [], label="Repeated/s (loop)", tag="s_copy")
-                        dpg.add_inf_line_series([], label="Marks", tag="s_marks")
-
-            with dpg.group(tag="result_group", show=False):
-                dpg.add_separator()
-                dpg.add_text("", tag="verdict")
-                if self.mid_font:
-                    dpg.bind_item_font("verdict", self.mid_font)
-                dpg.add_text("", tag="verdict_conf", color=GREY)
-                with dpg.group(horizontal=True):
-                    dpg.add_button(label="Open report", callback=lambda: self.last_run_dir and open_path(
-                        os.path.join(self.last_run_dir, "report.html")))
-                    dpg.add_button(label="Open folder", callback=lambda: self.last_run_dir and open_path(self.last_run_dir))
-                dpg.add_input_text(tag="findings", multiline=True, readonly=True, width=-1, height=220)
-
-        with dpg.theme() as th:
-            with dpg.theme_component(dpg.mvAll):
-                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 4)
-                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 8, 5)
-                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, 8)
-        dpg.bind_theme(th)
+    def closeEvent(self, event) -> None:
+        if self.wizard is not None and self.wizard.busy:
+            if QMessageBox.question(self, "Capture running", "Stop the capture and quit? The results so far are saved.",
+                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                event.ignore()
+                return
+            s = self.wizard.running.session
+            self.wizard.running.timer.stop()
+            self.wizard.running.session = None
+            if s:
+                s.stop({})
+        event.accept()
 
 
-def run_gui(screenshot: Optional[str] = None, frames: int = 0) -> int:
-    dpg.create_context()
-    app = App()
-    app.build()
-    dpg.create_viewport(title=f"l2-loopcheck {__version__}", width=1120, height=860)
-    dpg.setup_dearpygui()
-    dpg.show_viewport()
-    dpg.set_primary_window("main", True)
-    app.refresh_interfaces()
-    n = 0
-    try:
-        while dpg.is_dearpygui_running():
-            app.tick()
-            dpg.render_dearpygui_frame()
-            n += 1
-            if screenshot and n == frames:
-                dpg.output_frame_buffer(file=screenshot)
-            if screenshot and n > frames + 5:
-                break
-    finally:
-        if app.session:
-            app.session.stop(app.branding())
-        dpg.destroy_context()
-    return 0
+def run_gui() -> int:
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setStyle("Fusion")
+    app.setStyleSheet(theme.stylesheet())
+    app.setWindowIcon(app_icon())
+    window = MainWindow()
+    window.show()
+    return app.exec()
 
 
 if __name__ == "__main__":

@@ -46,7 +46,7 @@ jobs:
     needs: test
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-22.04]
+        os: [macos-latest, ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +61,9 @@ jobs:
           curl -sSL -o /usr/local/bin/appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           sudo chmod +x /usr/local/bin/appimagetool
       - run: bash packaging/build.sh
+        if: runner.os != 'Windows'
+      - run: powershell -ExecutionPolicy Bypass -File packaging/windows/build.ps1 -Python python
+        if: runner.os == 'Windows'
       - uses: actions/upload-artifact@v4
         with:
           name: l2-loopcheck-${{ runner.os }}

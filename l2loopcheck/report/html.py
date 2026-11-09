@@ -12,7 +12,17 @@ import html
 import time
 from typing import Optional
 
-SEV_LABEL = {"critical": "Critical", "high": "High", "warning": "Warning", "info": "Info"}
+SEV_LABEL = {"critical": "Critical", "high": "High", "warning": "Medium", "low": "Low", "info": "Info"}
+POSTURE_CLASS = {"Action needed": "bad", "Review": "warn", "No exposure seen": "good", "Not assessed": "neutral"}
+POSTURE_TEXT = {
+    "Action needed": "The capture shows weaknesses or suspicious activity that should be dealt with now.",
+    "Review": "The capture shows weaknesses worth reviewing.",
+    "No exposure seen": "Nothing of concern was seen. This covers only what could be observed from this capture point; "
+                        "see the list of checks that were limited.",
+    "Not assessed": "No frames were captured, so security could not be assessed.",
+}
+COVERAGE_LABEL = {"performed": "Performed", "limited": "Limited", "not_performed": "Not performed"}
+VANTAGE_LABEL = {"access": "Access port", "span": "SPAN / mirror port", "trunk": "Trunk port"}
 VERDICT_CLASS = {
     "Loop likely": "bad", "STP unstable": "warn", "Storm without clear loop": "warn",
     "Inconclusive": "neutral", "Healthy": "good",
@@ -119,27 +129,37 @@ def render_html(r: dict, branding: dict | None = None) -> str:
         except OSError:
             logo = ""
     org = e(b.get("company") or "")
-    title = "Layer-2 Network Health Check"
+    title = "Network Health and Security Check"
+    eng = r.get("engagement") or {}
+    b = {**{k: eng.get(k) for k in ("company", "site", "case_ref", "engineer", "logo_path")}, **{k: x for k, x in b.items() if x}}
+    org = e(b.get("company") or eng.get("org") or "")
+    client = eng.get("client")
     meta = [
         ("Site / location", b.get("site") or "-"), ("Case reference", b.get("case_ref") or "-"),
         ("Engineer", b.get("engineer") or "-"),
         ("Captured", f"{fmt_ts(cap['start'])} - {fmt_ts(cap['end'])} ({cap['duration_s']:.0f} s)"),
         ("Capture point", cap.get("interface") or cap.get("source") or "-"),
     ]
+    if client:
+        meta.insert(0, ("Client", client))
+    if cap.get("vantage"):
+        meta.append(("Observation point", VANTAGE_LABEL.get(cap["vantage"], cap["vantage"]) +
+                     ("" if cap.get("vantage_declared") else " (inferred from the traffic)")))
     neigh = r.get("neighbours") or []
     if neigh:
         n0 = neigh[0]
         meta.append(("Connected to", f"{n0['system_name'] or n0['chassis']} port {n0['port']} ({n0['protocol']})"))
     meta_html = "".join(f"<div><dt>{e(k)}</dt><dd>{e(val)}</dd></div>" for k, val in meta)
-    top_findings = [f for f in v["findings"] if f["severity"] in ("critical", "high")][:4]
+    top_findings = [f for f in v["findings"] if f["severity"] in ("critical", "high")][:6]
     key_points = "".join(f"<li>{e(f['title'])}</li>" for f in top_findings) or "<li>No significant issues.</li>"
     steps = "".join(f"<li>{e(s)}</li>" for s in v["next_steps"])
 
     # Findings
     fhtml = []
+    shtml = []
     for i, f in enumerate(v["findings"], 1):
         frames = ", ".join(str(x) for x in f["frames"][:10])
-        fhtml.append(f"""<section class='finding sev-{e(f['severity'])}'>
+        (shtml if f.get("category") == "security" else fhtml).append(f"""<section class='finding sev-{e(f['severity'])}'>
 <h3><span class='sev'>{e(SEV_LABEL.get(f['severity'], f['severity']))}</span> {i}. {e(f['title'])}</h3>
 <p class='obs'><b>Observed</b> {e(f['observed'])}</p>
 {f"<p class='hyp'><b>Hypothesis</b> {e(f['hypothesis'])}</p>" if f.get('hypothesis') else ''}
@@ -147,6 +167,25 @@ def render_html(r: dict, branding: dict | None = None) -> str:
 {f"<p class='frames'>Frames (Wireshark No.): {e(frames)}</p>" if frames else ''}
 </section>""")
 
+    sec = v.get("security") or {}
+    counts = sec.get("counts") or {}
+    tiles = "".join(f"<div class='tile sev-{k}'><b>{counts.get(k, 0)}</b><span>{SEV_LABEL[k]}</span></div>"
+                    for k in ("critical", "high", "warning", "low", "info"))
+    posture = sec.get("posture", "Not assessed")
+    coverage_rows = [[c["check"], COVERAGE_LABEL.get(c["status"], c["status"]), c["reason"]] for c in r.get("coverage", [])]
+    s = r.get("security") or {}
+    hosts = [[h["mac"] + (" (random/local)" if h["local_admin"] else ""), ", ".join(h["ips"][:3]) or "-",
+              ", ".join(h["names"][:2]) or "-", ", ".join(h["vlans"]), ", ".join(h["roles"]) or "-",
+              ", ".join(h["protocols"]), f"{h['frames']:,}"] for h in s.get("hosts", [])[:200]]
+    services = [[x["service"], x["server"], x.get("port") or "-", x["vlan"], len(x["clients"]), x["first_frame"]]
+                for x in s.get("services", [])[:100]]
+    scope_rows = [["Site", eng.get("site") or "-"], ["Client", client or "-"],
+                  ["Engineer", eng.get("engineer") or "-"], ["Organisation", eng.get("org") or "-"],
+                  ["Authorisation confirmed", (f"Yes, by {eng.get('authorised_by') or 'the engineer'}" if eng.get("authorised") else "Not recorded")],
+                  ["Traffic sent by this tool", "Loop probe only (see below)" if r.get("probes") else "None: passive capture"]]
+    pre_rows = [[c["title"], c["status"].upper(), c["detail"]] for c in eng.get("preflight", [])]
+    redacted_banner = ("<p class='redacted'>Redacted for sharing: addresses, device names, site details and notes have been "
+                       "replaced.</p>" if r.get("redacted") else "")
     marks = r.get("marks") or []
     marks_rows = [[i + 1, time.strftime("%H:%M:%S", time.localtime(m["ts"])), m["label"]] for i, m in enumerate(marks)]
 
@@ -209,7 +248,10 @@ dl.meta{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 20px;margin:16
 .verdict .label{{font-size:26px;font-weight:700}}.verdict .conf{{color:var(--muted);margin-left:8px}}
 .cols{{display:grid;grid-template-columns:1fr 1fr;gap:24px}}
 .finding{{border:1px solid var(--line);border-left:5px solid var(--neutral);border-radius:6px;padding:12px 14px;margin:10px 0;break-inside:avoid}}
-.sev-critical{{border-left-color:var(--bad)}}.sev-high{{border-left-color:#d4541b}}.sev-warning{{border-left-color:var(--warn)}}.sev-info{{border-left-color:#8a94a0}}
+.sev-critical{{border-left-color:var(--bad)}}.sev-high{{border-left-color:#d4541b}}.sev-warning{{border-left-color:var(--warn)}}.sev-low{{border-left-color:#2f6fa8}}.sev-info{{border-left-color:#8a94a0}}
+.tiles{{display:flex;gap:10px;margin:12px 0}}.tile{{flex:1;border:1px solid var(--line);border-top:5px solid var(--neutral);border-radius:6px;padding:10px;text-align:center}}.tile b{{display:block;font-size:26px}}.tile span{{color:var(--muted);font-size:12px}}
+.tile.sev-critical{{border-top-color:var(--bad)}}.tile.sev-high{{border-top-color:#d4541b}}.tile.sev-warning{{border-top-color:#e0a100}}.tile.sev-low{{border-top-color:#2f6fa8}}.tile.sev-info{{border-top-color:#8a94a0}}
+.redacted{{background:var(--warn-bg);border:1px solid #e9b44c;border-radius:6px;padding:8px 12px}}
 .sev{{font-size:11px;text-transform:uppercase;letter-spacing:.05em;background:var(--soft);padding:2px 6px;border-radius:4px;margin-right:4px}}
 .finding p{{margin:4px 0}}.finding b{{display:inline-block;min-width:110px;color:var(--muted);font-weight:600}}
 .hyp{{font-style:italic}}.frames{{color:var(--muted);font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace}}
@@ -226,10 +268,12 @@ footer{{margin-top:36px;color:var(--muted);font-size:11px;border-top:1px solid v
 @media (max-width:700px){{dl.meta,.cols{{grid-template-columns:1fr}}}}
 </style></head><body><main>
 <header class="top"><div><h1>{e(title)}</h1><div class="org">{org}</div></div>{logo}</header>
-<dl class="meta">{meta_html}</dl>
+{redacted_banner}<dl class="meta">{meta_html}</dl>
 
-<section class="verdict {vclass}"><div><span class="label">{e(v['label'])}</span><span class="conf">confidence: {e(v['confidence'])}</span></div>
+<section class="verdict {vclass}"><div><span class="label">{e(v['label'])}</span><span class="conf">Network health. Confidence: {e(v['confidence'])}</span></div>
 <p>{e(SUMMARY_TEXT.get(v['label'], ''))}</p></section>
+<section class="verdict {POSTURE_CLASS.get(posture, 'neutral')}"><div><span class="label">{e(posture)}</span><span class="conf">Security</span></div>
+<p>{e(POSTURE_TEXT.get(posture, ''))}</p><div class="tiles">{tiles}</div></section>
 
 <div class="cols"><div><h2>Key points</h2><ul>{key_points}</ul></div>
 <div><h2>What to do next</h2><ol>{steps}</ol></div></div>
@@ -238,9 +282,22 @@ footer{{margin-top:36px;color:var(--muted);font-size:11px;border-top:1px solid v
 {('<h3>Engineer marks</h3>' + _table(marks_rows, ['#', 'Time', 'Note'])) if marks else ''}
 
 <div class="page-break"></div>
-<h2>Findings (evidence for IT)</h2>
+<h2>Security findings</h2>
+<p class="muted">Credentials, community strings and payloads are never stored or shown. Severity is a category, not a score.</p>
+{''.join(shtml) or "<p class='muted'>No security findings from this capture point.</p>"}
+
+<h2>What this capture could not check</h2>
+<p class="muted">A check that was limited or skipped says nothing about the network. Do not read its absence from the findings as a pass.</p>
+{_table(coverage_rows, ['Check', 'Status', 'Why'])}
+
+<h2>Network findings (evidence for IT)</h2>
 <p class="muted">"Observed" is what the capture shows; "Hypothesis" is an interpretation to verify on site. Frame numbers match Wireshark's "No." column in the saved capture.</p>
 {''.join(fhtml) or "<p class='muted'>No findings.</p>"}
+
+<h2>Devices seen</h2>
+<p>{s.get('hosts_total', 0):,} source MAC addresses seen{' (showing the busiest 200)' if s.get('hosts_total', 0) > 200 else ''}.</p>
+{_table(hosts, ['MAC', 'IP', 'Name', 'VLAN', 'Role', 'Protocols', 'Frames'])}
+{('<h3>Clear-text, web and OT services seen</h3>' + _table(services, ['Service', 'Server', 'Port', 'VLAN', 'Clients seen', 'First frame'])) if services else ''}
 
 <h2>Repeated frames</h2>
 <p>{dup['copies']:,} of {dup['frames']:,} frames ({dup['copy_ratio']:.1%}) were copies of a frame seen less than 200 ms earlier.</p>
@@ -263,6 +320,9 @@ Topology changes: {stp['tc_events']} ({stp['tc_per_minute']}/min). Root changes:
 <h2>Neighbours (LLDP / CDP)</h2>{_table(nrows, ['Protocol', 'Device', 'Port', 'Mgmt IP', 'Platform', 'Native VLAN', 'First frame'])}
 <h2>Duplicate IP addresses</h2>{_table(dips, ['IP', 'MACs', 'First frames'])}
 {('<h2>Loop probe</h2>' + _table(probes, ['Nonce', 'Frames sent', 'Sent at', 'Came back'])) if probes else ''}
+
+<h2>Scope and authorisation</h2>{_table(scope_rows, ['Item', 'Value'])}
+{('<h3>Pre-flight checks</h3>' + _table(pre_rows, ['Check', 'Result', 'Detail'])) if pre_rows else ''}
 
 <h2>Capture integrity and limitations</h2>{_table(integrity, ['Item', 'Value'])}
 <ul>{limitations}</ul>

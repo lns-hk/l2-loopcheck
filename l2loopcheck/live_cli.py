@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -18,9 +19,22 @@ def confirm_probe(interface: str) -> bool:
     return input("Send the probe now? [y/N] ").strip().lower() in ("y", "yes")
 
 
-def run_live(args) -> int:
+def _resolve_windows_interface(args) -> None:
+    """Accept '-i Ethernet' or '-i 3' on Windows instead of the long NPF device name."""
+    if os.name != "nt" or args.interface.startswith("\\"):
+        return
+    from .capture import list_interfaces, resolve_interface
+
     try:
-        s = LiveSession(args.interface, args.backend, args.out, args.max_total_mb)
+        args.interface = resolve_interface(args.interface, list_interfaces(args.backend))
+    except (RuntimeError, OSError, CaptureToolMissing):
+        pass  # LiveSession reports a missing tool; dumpcap reports an unknown interface
+
+
+def run_live(args) -> int:
+    _resolve_windows_interface(args)
+    try:
+        s = LiveSession(args.interface, args.backend, args.out, args.max_total_mb, vantage=args.vantage)
     except CaptureToolMissing as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -80,5 +94,5 @@ def run_live(args) -> int:
     from .cli import print_summary
 
     print_summary(r)
-    print(f"Report: {s.run_dir}/report.html")
+    print(f"Report: {os.path.join(s.run_dir, 'report.html')}")
     return 0 if not s.error else 1

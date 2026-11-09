@@ -8,6 +8,8 @@ are to be calibrated against lab captures.
 
 from __future__ import annotations
 
+from .detect.security import security_findings
+
 LOOP_LIKELY = "Loop likely"
 STP_UNSTABLE = "STP unstable"
 STORM = "Storm without clear loop"
@@ -31,6 +33,7 @@ def _f(severity, code, title, observed, hypothesis=None, recommendation=None, fr
     return {
         "severity": severity, "code": code, "title": title, "observed": observed,
         "hypothesis": hypothesis, "recommendation": recommendation, "frames": frames or [],
+        "category": "network", "confidence": "inferred" if hypothesis else "observed",
     }
 
 
@@ -38,6 +41,12 @@ def judge(r: dict) -> dict:
     cap, dup, tr, stp = r["capture"], r["duplicates"], r["traffic"], r["stp"]
     findings = []
     integrity_problems = []
+    if not cap["packets"]:
+        integrity_problems.append("no frames were captured")
+        findings.append(_f(
+            "high", "no-frames", "Nothing was captured",
+            "The capture contains no frames, so nothing about this network can be concluded.",
+            recommendation="Check the cable and the selected adapter, then capture again."))
 
     # ------------------------------------------------------ capture integrity
     dur, pk = cap["duration_s"], cap["packets"]
@@ -99,18 +108,33 @@ def judge(r: dict) -> dict:
             hypothesis="A loop is likely, but repeats do not share one clear period.",
             recommendation="Run a probe or capture longer to confirm.",
             frames=[e["first_frame"] for e in dup["examples"][:5]]))
-    elif dup["groups_repeated_3plus"] > 0 and not dup["span_artefact_suspected"]:
-        ex = dup["examples"][0]
+    elif (real_repeats := [x for x in dup["examples"] if len(x["vlans"]) < 2]) and not dup["span_artefact_suspected"]:
+        ex = real_repeats[0]
         findings.append(_f(
             "info", "few-replays", "A few frames were repeated",
             f"{dup['groups_repeated_3plus']} frame(s) were seen 3 or more times within 200 ms, "
             f"e.g. {ex['proto']} from {ex['src']} x{ex['copies']}.",
             hypothesis="Could be a short-lived loop, a sender retransmitting, or normal protocol behaviour.",
-            frames=[e["first_frame"] for e in dup["examples"][:5]]))
-    if dup["cross_vlan_count"]:
+            frames=[e["first_frame"] for e in real_repeats[:5]]))
+    negative_probes = [p for p in probes if not p["loop_confirmed"] and not p["ambiguous"] and p["sent"]]
+    if negative_probes and not confirmed_probe:
+        findings.append(_f(
+            "info", "probe-negative", "Test frames did not come back",
+            f"{negative_probes[0]['sent']} test frame(s) were sent and none returned, so this port's broadcast "
+            "domain showed no loop while the probe ran."))
+    if dup["cross_vlan_count"] and dup.get("cross_vlan_sources", 2) < 2:
+        ex = dup["cross_vlan"][0]
+        findings.append(_f(
+            "info", "multi-vlan-host", "One device sends the same frame into several VLANs",
+            f"{ex['proto']} from {ex['src']} appeared in VLANs {ex['vlans']}. No other device crossed VLANs.",
+            hypothesis="A host with an interface in each VLAN, such as a NAS, router or hypervisor. A real bridge "
+                       "between VLANs would leak frames from many devices.",
+            frames=ex["example_frames"]))
+    elif dup["cross_vlan_count"]:
         ex = dup["cross_vlan"][0]
         # A path between two VLANs on a trunk closes a loop through the trunk itself.
-        loop_level = loop_level or "medium"
+        if not negative_probes:
+            loop_level = loop_level or "medium"
         findings.append(_f(
             "high", "cross-vlan", "The same frame appears in more than one VLAN",
             f"{dup['cross_vlan_count']} frame(s) were seen with different VLAN tags, e.g. {ex['proto']} from "
@@ -218,6 +242,8 @@ def judge(r: dict) -> dict:
 
     # -------------------------------------------------------------- verdict
     reasons = [f["title"] for f in findings if f["severity"] in ("critical", "high")]
+    security_list = security_findings(r["security"], r["duplicate_ips"], r["neighbours"], stp,
+                                      cap.get("vantage") or "access", cap.get("vantage_declared")) if r.get("security") else []
     if loop_level:
         label, conf = LOOP_LIKELY, loop_level
     elif stp_unstable:
@@ -233,9 +259,16 @@ def judge(r: dict) -> dict:
     if integrity_problems and label != INCONCLUSIVE:
         conf = "medium" if conf == "high" else "low"
     next_steps = _next_steps(label, integrity_problems, stp)
-    order = {"critical": 0, "high": 1, "warning": 2, "info": 3}
+    findings += security_list
+    order = {"critical": 0, "high": 1, "warning": 2, "low": 3, "info": 4}
     findings.sort(key=lambda f: order[f["severity"]])
-    return {"label": label, "confidence": conf, "reasons": reasons, "limitations": integrity_problems + [
+    counts = {k: sum(1 for f in security_list if f["severity"] == k) for k in order}
+    limited = [c for c in r.get("coverage", []) if c["status"] != "performed"]
+    posture = ("Not assessed" if not cap["packets"] else
+               "Action needed" if counts["critical"] or counts["high"] else
+               "Review" if counts["warning"] else "No exposure seen")
+    return {"label": label, "security": {"posture": posture, "counts": counts, "checks_limited": len(limited)},
+             "confidence": conf, "reasons": reasons, "limitations": integrity_problems + [
         "Captured from one port: only flooded traffic and traffic addressed to this host is visible.",
     ], "next_steps": next_steps, "findings": findings}
 

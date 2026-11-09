@@ -100,11 +100,13 @@ class RingWriter:
 class LiveSession:
     def __init__(self, interface: str, backend: str = "auto", run_dir: Optional[str] = None,
                  max_total_mb: int = 2048, on_end: Callable[[Optional[str]], None] = lambda e: None,
-                 save_frames: bool = True) -> None:
+                 save_frames: bool = True, vantage: Optional[str] = None, engagement: Optional[dict] = None) -> None:
         self.interface = interface
         self.run_dir = run_dir or os.path.join(os.getcwd(), "runs", time.strftime("%Y%m%d-%H%M%S"))
         os.makedirs(self.run_dir, exist_ok=True)
         self.analyzer = Analyzer(source="live", interface=interface)
+        self.analyzer.declared_vantage = vantage
+        self.analyzer.engagement = engagement or {}
         self.ring = RingWriter(self.run_dir, max_total_mb * 1024 * 1024) if save_frames else None
         self.lock = threading.Lock()
         self.error: Optional[str] = None
