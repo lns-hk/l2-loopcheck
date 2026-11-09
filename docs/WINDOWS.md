@@ -1,6 +1,6 @@
-# Windows work package
+# Windows support notes
 
-Owner: the Windows agent on Lierre-PC. Everything else is shared code; keep
+Windows support notes. Everything else is shared code; keep
 changes to shared modules minimal and covered by tests on all platforms.
 
 ## Goals
@@ -26,11 +26,11 @@ changes to shared modules minimal and covered by tests on all platforms.
 5. **Tests**: full `python -m unittest discover -s tests -t .` passes on
    Windows; add Windows-only tests (skip elsewhere) for interface parsing and
    the probe sender (send to a loopback-free check: open/close only, unless
-   Lierre approves a real send).
+   the network owner approves a real send).
 
 ## Rules
 
-* Never send probe frames on a real network without Lierre's explicit OK.
+* Never send probe frames on a real network without the network owner's explicit OK.
 * No client, employer or building names anywhere. Use documentation ranges.
 * Work on branch `windows`; open a PR to `main`. Commits end with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
